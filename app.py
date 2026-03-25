@@ -147,7 +147,7 @@ def get_universe(mode: str) -> List[str]:
         custom_str = st.session_state.get("custom_tickers", "AAPL, MSFT, TSLA, NVDA")
         return [x.strip().upper() for x in custom_str.split(",") if x.strip()]
     elif mode == "Dow Jones 30": return DOW30
-    return fetch_universe()  # Merged caching simplifies lookup
+    return fetch_universe()
 
 # ── Settings init ────────────────────────────────────────────────────────────
 def init_settings():
@@ -572,6 +572,59 @@ def scan_universe(tickers: List[str], max_scan: int = 80) -> pd.DataFrame:
             })
         except Exception: continue
     return pd.DataFrame(rows).sort_values(["Score","RS vs SPY"], ascending=False).reset_index(drop=True)
+
+# ── Alerts & Auto-Scan Helpers ──────────────────────────────────────────────
+def send_email_alert(to_addr: str, smtp_user: str, smtp_pass: str, subject: str, body: str) -> bool:
+    try:
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
+        msg["From"]    = smtp_user
+        msg["To"]      = to_addr
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as s:
+            s.starttls()
+            s.login(smtp_user, smtp_pass)
+            s.sendmail(smtp_user, to_addr, msg.as_string())
+        return True
+    except Exception:
+        return False
+
+def push_browser_notification(title: str, body: str):
+    components.html(f"""<script>
+    (function(){{
+      if(Notification.permission==='granted'){{
+        new Notification({repr(title)},{{body:{repr(body)},icon:'https://cdn-icons-png.flaticon.com/32/2168/2168252.png'}});
+      }}
+    }})();
+    </script>""", height=0)
+
+def check_auto_scan(universe: List[str]):
+    if not st.session_state.get("auto_scan", False):
+        return
+    interval = st.session_state.get("scan_interval", 15) * 60
+    now = time.time()
+    last = st.session_state.get("last_auto_scan", 0.0)
+    if now - last < interval:
+        return
+    st.session_state["last_auto_scan"] = now
+    with st.spinner("Auto-scan running…"):
+        results = scan_universe(tuple(universe[:80]), 80)
+    if results.empty:
+        return
+    buys = results[results["Verdict"] == "STRONG BUY"]
+    top = buys.iloc[0] if len(buys) > 0 else results.iloc[0]
+    st.session_state["auto_top_ticker"] = top["Ticker"]
+    st.session_state["auto_top_score"]  = top["Score"]
+    title = f"Trading Alert — {top['Ticker']}"
+    body  = f"{top['Verdict']} · Score {top['Score']}/100 · ${top['Price']:.2f}"
+    if st.session_state.get("alert_browser"):
+        push_browser_notification(title, body)
+    if st.session_state.get("alert_email") and st.session_state.get("alert_email_addr"):
+        send_email_alert(
+            st.session_state["alert_email_addr"],
+            st.session_state.get("smtp_user", ""),
+            st.session_state.get("smtp_pass", ""),
+            title, body,
+        )
 
 # ============================================================
 # Application Entry
