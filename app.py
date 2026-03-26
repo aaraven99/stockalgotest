@@ -444,7 +444,7 @@ def check_auto_scan(universe: List[str]):
     st.session_state["last_auto_scan"] = now
     
     with st.spinner("Auto-scan running…"):
-        results = scan_universe(tuple(universe[:80]), 80, auto_tune=False)
+        results = scan_universe(tuple(universe), len(universe), auto_tune=False)
         
     if results.empty:
         return
@@ -1117,6 +1117,7 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
 
     pb = st.progress(0, "Scanning universe...")
     
+    # Process only requested amount
     target_tickers = tickers[:max_scan]
     
     for i, ticker in enumerate(target_tickers):
@@ -1325,7 +1326,6 @@ def main():
                             )
 
                             chg_pct = (last["Close"] / df["Close"].iloc[-2] - 1) * 100 if len(df) > 1 else 0
-                            
                             m1, m2, m3, m4, m5, m6 = st.columns(6)
                             m1.metric("Price", f"${last['Close']:.2f}", f"{chg_pct:+.2f}%", help="Last close price and 1-day % change.")
                             m2.metric("RSI",   f"{last['RSI']:.1f}",  help="<30 oversold · >70 overbought")
