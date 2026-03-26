@@ -210,7 +210,7 @@ DOW30 = sorted([
     "MSFT","NKE","PG","TRV","UNH","V","VZ","WBA","WMT","INTC",
 ])
 
-# New Feature: Major ETFs & Funds
+# Major ETFs & Funds
 ETFS_FUNDS = sorted([
     "SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "ARKK", "GLD", "SLV", "USO", 
     "UNG", "TLT", "TMF", "XLF", "XLK", "XLE", "XLU", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE"
@@ -345,7 +345,7 @@ def inject_theme(theme: str, font: str):
     div[data-baseweb="select"]>div {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;}}
     div[data-baseweb="input"]>div {{background-color:{c['card']} !important;border-color:{c['border']} !important;}}
     .stButton>button {{background-color:{c['accent']} !important;border:none !important;font-family:{ff} !important;font-weight:600 !important;}}
-    .stTextInput input, .stTextArea textarea, .stNumberInput input {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;font-family:{ff} !important;}}
+    .stTextInput input, .stNumberInput input, .stTextArea textarea {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;font-family:{ff} !important;}}
     .streamlit-expanderHeader {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['sub']} !important;border-radius:6px !important;}}
     .stCheckbox label {{color:{c['sub']} !important;}}
     </style>""", unsafe_allow_html=True)
@@ -1045,19 +1045,24 @@ def build_pnl_scatter(df, signal) -> go.Figure:
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = False) -> pd.DataFrame:
     rows = []
-    spy_raw = fetch_ohlcv("SPY", "6mo")
+    spy_raw = fetch_ohlcv("SPY", "1y")
     spy_ret = float((spy_raw["Close"].iloc[-1] / spy_raw["Close"].iloc[0] - 1) * 100) if spy_raw is not None and not spy_raw.empty else 0.0
 
     pb = st.progress(0, "Scanning universe...")
-    for i, ticker in enumerate(tickers[:max_scan]):
-        pb.progress((i + 1) / len(tickers[:max_scan]), text=f"Analyzing {ticker} ({i+1}/{len(tickers[:max_scan])})")
+    
+    # Process only requested amount
+    target_tickers = tickers[:max_scan]
+    
+    for i, ticker in enumerate(target_tickers):
+        pb.progress((i + 1) / len(target_tickers), text=f"Analyzing {ticker} ({i+1}/{len(target_tickers)})")
         try:
-            raw = fetch_ohlcv(ticker, "6mo")
-            if raw is None or len(raw) < 60:
+            # Need at least 1y for scanner so indicators don't break during auto_tune
+            raw = fetch_ohlcv(ticker, "1y") 
+            if raw is None or len(raw) < 120:
                 continue
 
             if auto_tune:
-                # Feature: Run fast optimal values for best guidance
+                # Run fast optimal values for best guidance
                 bp, _, _ = optimize_params(raw, fast=True)
                 df = add_all_indicators(raw, bp["rsi"], bp["macd_fast"], bp["macd_slow"])
             else:
@@ -1069,7 +1074,10 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
             last_rsi   = float(df["RSI"].iloc[-1])
             last_atr   = float(df["ATR"].iloc[-1])
             chg_1d  = float((df["Close"].iloc[-1] / df["Close"].iloc[-2] - 1) * 100) if len(df) > 1 else 0.0
-            chg_6mo = float((df["Close"].iloc[-1] / df["Close"].iloc[0]  - 1) * 100) if len(df) > 1 else 0.0
+            
+            # Compare vs 6mo
+            idx_6mo = int(len(df) / 2) if len(df) > 126 else 0
+            chg_6mo = float((df["Close"].iloc[-1] / df["Close"].iloc[idx_6mo] - 1) * 100) if len(df) > 1 else 0.0
             rs_ratio = round(chg_6mo - spy_ret, 2)
             
             rows.append({
@@ -1083,8 +1091,7 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
                 "ATR":        round(last_atr, 2),
                 "Stop Loss":  round(last_close - 2*last_atr, 2),
                 "Verdict":    verdict_from_score(last_score),
-                "Top Signal": reasons[0] if reasons else "",
-                "YF Link":    f"https://finance.yahoo.com/quote/{ticker}" # Feature: Quick shortcut to YF
+                "YF Link":    f"https://finance.yahoo.com/quote/{ticker}" # Quick shortcut to YF
             })
         except Exception:
             continue
@@ -1128,56 +1135,18 @@ def main():
     # Run auto-scan if due
     check_auto_scan(universe)
 
-    # ── Sidebar: Rapid Trade Execution & Watchlist Sync ──
-    with st.sidebar:
-        st.markdown("### 💼 Paper Trading & Risk")
-        st.metric("Virtual Balance", f"${st.session_state.paper_cash:,.2f}")
-        
-        trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers) if st.session_state.active_tickers else None
-        trade_amt = st.number_input("Amount to Risk ($)", min_value=10.0, max_value=st.session_state.paper_cash, value=min(500.0, st.session_state.paper_cash), step=100.0)
-        
-        tc1, tc2 = st.columns(2)
-        if tc1.button("BUY", use_container_width=True) and trade_ticker:
-            raw = fetch_ohlcv(trade_ticker, "1mo")
-            if not raw.empty:
-                px_cur = raw["Close"].iloc[-1]
-                shares = trade_amt / px_cur
-                if st.session_state.paper_cash >= trade_amt:
-                    st.session_state.paper_cash -= trade_amt
-                    if trade_ticker in st.session_state.paper_portfolio:
-                        st.session_state.paper_portfolio[trade_ticker]["shares"] += shares
-                    else:
-                        st.session_state.paper_portfolio[trade_ticker] = {"shares": shares, "avg_price": px_cur}
-                    st.session_state.paper_history.append({"Action": "BUY", "Ticker": trade_ticker, "Price": px_cur, "Shares": shares})
-                    st.success(f"Bought {trade_ticker}")
-                    
-        if tc2.button("SELL ALL", use_container_width=True) and trade_ticker:
-            if trade_ticker in st.session_state.paper_portfolio:
-                raw = fetch_ohlcv(trade_ticker, "1mo")
-                if not raw.empty:
-                    px_cur = raw["Close"].iloc[-1]
-                    shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
-                    st.session_state.paper_cash += (shares * px_cur)
-                    del st.session_state.paper_portfolio[trade_ticker]
-                    st.session_state.paper_history.append({"Action": "SELL", "Ticker": trade_ticker, "Price": px_cur, "Shares": shares})
-                    st.success(f"Sold {trade_ticker}")
-                    
-        if st.session_state.paper_portfolio:
-            st.markdown("<br><b>Open Positions</b>", unsafe_allow_html=True)
-            for k, v in st.session_state.paper_portfolio.items():
-                st.caption(f"• **{k}**: {v['shares']:.2f} shares @ ${v['avg_price']:.2f}")
-
     # Auto-scan banner when it has fired
     top_t = st.session_state.get("auto_top_ticker", "")
     if top_t:
         top_s = st.session_state.get("auto_top_score", 0)
         st.info(f"Auto-scan alert: **{top_t}** is the top pick right now (Score {top_s}/100). Head to the Scanner tab for details.")
 
-    # Feature: Added News Tab
-    tab_analyze, tab_scan, tab_backtest, tab_news, tab_settings = st.tabs([
+    # Added Paper Trading Tab and News Tab
+    tab_analyze, tab_scan, tab_backtest, tab_paper, tab_news, tab_settings = st.tabs([
         "📈  ANALYZE",
         "🔍  SCANNER",
         "📊  BACKTEST",
+        "💼  PAPER TRADING",
         "📰  NEWS",
         "⚙️  SETTINGS",
     ])
@@ -1240,7 +1209,7 @@ def main():
                 st.session_state[k] = v
 
         with right:
-            # Feature: TradingView-style Multiple Workspace Tabs
+            # TradingView-style Multiple Workspace Tabs
             if not st.session_state.active_tickers:
                 st.info("Add a ticker on the left to start analyzing.")
             else:
@@ -1364,75 +1333,68 @@ def main():
 
         if scan_btn:
             limit = len(universe) if scan_all else int(max_scan)
-            with st.spinner(f"Scanning {min(limit, len(universe))} stocks …"):
-                results = scan_universe(tuple(universe), limit, auto_tune)
-
-            if results.empty:
-                st.warning("No data returned. Try again in a moment.")
+            if limit == 0:
+                st.warning("Your selected universe is empty. Please select a valid list in Settings.")
             else:
-                buys  = results[results["Verdict"] == "STRONG BUY"]
-                sells = results[results["Verdict"] == "STRONG SELL"]
+                with st.spinner(f"Scanning {min(limit, len(universe))} stocks (this may take a moment)…"):
+                    results = scan_universe(tuple(universe), limit, auto_tune)
 
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Scanned",      len(results),                                    help="Total stocks analyzed.")
-                c2.metric("Strong Buys",  len(buys),                                       help="Score ≥ 72 — top bullish setups.")
-                c3.metric("Strong Sells", len(sells),                                      help="Score ≤ 38 — most bearish readings.")
-                c4.metric("Neutral",      len(results) - len(buys) - len(sells),   help="Mixed signals, no clear edge.")
+                if results.empty:
+                    st.warning("No data returned. Try again in a moment.")
+                else:
+                    buys  = results[results["Verdict"] == "STRONG BUY"]
+                    sells = results[results["Verdict"] == "STRONG SELL"]
 
-                top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
-                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#10b981;margin:22px 0 10px 0">TOP PICKS</div>', unsafe_allow_html=True)
-                pick_cols = st.columns(min(len(top5), 5))
-                for col, (_, row) in zip(pick_cols, top5.iterrows()):
-                    chg_cls   = "pick-chg-up" if row["1D Chg%"] >= 0 else "pick-chg-down"
-                    chg_arrow = "▲" if row["1D Chg%"] >= 0 else "▼"
-                    rs_color  = "#34d399" if row["RS vs SPY"] >= 0 else "#f87171"
-                    col.markdown(f"""
-                    <div class="pick-card">
-                      <div class="pick-ticker">{row['Ticker']}</div>
-                      <div class="pick-score">{row['Score']}</div>
-                      <div style="color:#8b949e;font-size:0.65rem;margin-bottom:6px">/ 100</div>
-                      <div class="pick-price">${row['Price']:.2f}</div>
-                      <div class="{chg_cls}">{chg_arrow} {abs(row['1D Chg%']):.2f}%</div>
-                      <div style="color:{rs_color};font-size:0.78rem;margin-top:6px">vs SPY {row['RS vs SPY']:+.1f}%</div>
-                      <div style="color:#4b5563;font-size:0.68rem;margin-top:6px">RSI {row['RSI']:.0f} · Stop ${row['Stop Loss']:.2f}</div>
-                    </div>""", unsafe_allow_html=True)
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Scanned",      len(results),                                    help="Total stocks analyzed.")
+                    c2.metric("Strong Buys",  len(buys),                                       help="Score ≥ 72 — top bullish setups.")
+                    c3.metric("Strong Sells", len(sells),                                      help="Score ≤ 38 — most bearish readings.")
+                    c4.metric("Neutral",      len(results) - len(buys) - len(sells),   help="Mixed signals, no clear edge.")
 
-                # Feature: Heatmap of results
-                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
-                results["Heatmap_Size"] = 1
-                fig_hm = px.treemap(
-                    results, path=["Verdict", "Ticker"], values="Heatmap_Size",
-                    color="Score", color_continuous_scale=["#ef4444", "#4b5563", "#10b981"],
-                    range_color=[30, 75]
-                )
-                tc = _THEMES.get(st.session_state.get("theme", "TradingView"), _THEMES["TradingView"])
-                fig_hm.update_layout(paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"], font=dict(color=tc["text"]), margin=dict(t=0, l=0, r=0, b=0))
-                st.plotly_chart(fig_hm, use_container_width=True)
+                    top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
+                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#10b981;margin:22px 0 10px 0">TOP PICKS</div>', unsafe_allow_html=True)
+                    pick_cols = st.columns(min(len(top5), 5))
+                    for col, (_, row) in zip(pick_cols, top5.iterrows()):
+                        chg_cls   = "pick-chg-up" if row["1D Chg%"] >= 0 else "pick-chg-down"
+                        chg_arrow = "▲" if row["1D Chg%"] >= 0 else "▼"
+                        rs_color  = "#34d399" if row["RS vs SPY"] >= 0 else "#f87171"
+                        col.markdown(f"""
+                        <div class="pick-card">
+                          <div class="pick-ticker">{row['Ticker']}</div>
+                          <div class="pick-score">{row['Score']}</div>
+                          <div style="color:#8b949e;font-size:0.65rem;margin-bottom:6px">/ 100</div>
+                          <div class="pick-price">${row['Price']:.2f}</div>
+                          <div class="{chg_cls}">{chg_arrow} {abs(row['1D Chg%']):.2f}%</div>
+                          <div style="color:{rs_color};font-size:0.78rem;margin-top:6px">vs SPY {row['RS vs SPY']:+.1f}%</div>
+                          <div style="color:#4b5563;font-size:0.68rem;margin-top:6px">RSI {row['RSI']:.0f} · Stop ${row['Stop Loss']:.2f}</div>
+                        </div>""", unsafe_allow_html=True)
 
-                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
+                    # Heatmap of results
+                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
+                    results["Heatmap_Size"] = 1
+                    fig_hm = px.treemap(
+                        results, path=["Verdict", "Ticker"], values="Heatmap_Size",
+                        color="Score", color_continuous_scale=["#ef4444", "#4b5563", "#10b981"],
+                        range_color=[30, 75]
+                    )
+                    tc = _THEMES.get(st.session_state.get("theme", "TradingView"), _THEMES["TradingView"])
+                    fig_hm.update_layout(paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"], font=dict(color=tc["text"]), margin=dict(t=0, l=0, r=0, b=0))
+                    st.plotly_chart(fig_hm, use_container_width=True)
 
-                def _style_row(row):
-                    styles = [""] * len(row)
-                    idx = list(row.index)
-                    if "Verdict" in idx:
-                        i = idx.index("Verdict")
-                        styles[i] = ("color:#10b981;font-weight:700" if row["Verdict"] == "STRONG BUY" else
-                                     "color:#ef4444;font-weight:700" if row["Verdict"] == "STRONG SELL" else
-                                     "color:#f59e0b")
-                    if "Score" in idx and row["Score"] >= 72:
-                        styles[idx.index("Score")] = "color:#10b981;font-weight:700"
-                    if "RS vs SPY" in idx:
-                        styles[idx.index("RS vs SPY")] = "color:#34d399" if row["RS vs SPY"] > 0 else "color:#f87171"
-                    return styles
+                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
 
-                display = results.drop(columns=["Top Signal", "Heatmap_Size"], errors="ignore")
-                
-                # Feature: Clickable Yahoo Finance Link formatting
-                st.dataframe(
-                    display.style.apply(_style_row, axis=1), 
-                    column_config={"YF Link": st.column_config.LinkColumn("Yahoo Finance")},
-                    use_container_width=True, height=480
-                )
+                    # Removed Styler.apply to prevent the arrow_right overlapping bug.
+                    # Using clean, raw dataframe layout with native Streamlit LinkColumn.
+                    display = results.drop(columns=["Heatmap_Size"], errors="ignore")
+                    
+                    st.dataframe(
+                        display, 
+                        column_config={
+                            "YF Link": st.column_config.LinkColumn("Yahoo Finance", display_text="Open YF ↗"),
+                            "Verdict": st.column_config.TextColumn("Verdict")
+                        },
+                        use_container_width=True, height=480
+                    )
 
     # ════════════════════════════════════════════════════════
     # Tab 3 — Backtest
@@ -1516,7 +1478,7 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
 
-                    # Feature: Advanced KPIs
+                    # Advanced KPIs
                     st.markdown("#### Advanced KPIs")
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("Win Rate",        f"{metrics.win_rate:.1%}",      help="% of trades that made money.")
@@ -1530,7 +1492,7 @@ def main():
                     m7.metric("Avg Daily Range", f"{metrics.adr:.2f}%", help="Current volatility.")
                     m8.metric("Market Regime", "Trending" if metrics.adr > 2.0 else "Choppy", help="Determined by ADR.")
 
-                    # Feature: Scatter Plot for PnL
+                    # Scatter Plot for PnL
                     st.plotly_chart(build_pnl_scatter(df_bt, sig_bt), use_container_width=True, config=_PCFG)
 
                     # Trade levels
@@ -1587,7 +1549,96 @@ def main():
                 st.info("Enter a ticker on the left and click **RUN BACKTEST** to simulate your strategy.")
 
     # ════════════════════════════════════════════════════════
-    # Tab 4 — News
+    # Tab 4 — Paper Trading
+    # ════════════════════════════════════════════════════════
+    with tab_paper:
+        p1, p2 = st.columns([1, 2], gap="large")
+        
+        with p1:
+            st.markdown("### 💼 Execute Simulation")
+            st.metric("Virtual Balance", f"${st.session_state.paper_cash:,.2f}")
+            
+            trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers) if st.session_state.active_tickers else None
+            trade_amt = st.number_input("Amount to Risk ($)", min_value=10.0, max_value=max(10.0, st.session_state.paper_cash), value=min(500.0, max(10.0, st.session_state.paper_cash)), step=100.0)
+            
+            tc1, tc2 = st.columns(2)
+            if tc1.button("BUY", use_container_width=True, type="primary") and trade_ticker:
+                raw = fetch_ohlcv(trade_ticker, "1mo")
+                if not raw.empty:
+                    px_cur = raw["Close"].iloc[-1]
+                    shares = trade_amt / px_cur
+                    if st.session_state.paper_cash >= trade_amt:
+                        st.session_state.paper_cash -= trade_amt
+                        if trade_ticker in st.session_state.paper_portfolio:
+                            # Average price calculation
+                            old_shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
+                            old_avg = st.session_state.paper_portfolio[trade_ticker]["avg_price"]
+                            new_avg = ((old_shares * old_avg) + trade_amt) / (old_shares + shares)
+                            st.session_state.paper_portfolio[trade_ticker]["shares"] += shares
+                            st.session_state.paper_portfolio[trade_ticker]["avg_price"] = new_avg
+                        else:
+                            st.session_state.paper_portfolio[trade_ticker] = {"shares": shares, "avg_price": px_cur}
+                        st.session_state.paper_history.append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "BUY", "Ticker": trade_ticker, "Price": px_cur, "Shares": shares, "Value": trade_amt})
+                        st.success(f"Bought {trade_ticker}")
+                        st.rerun()
+                    else:
+                        st.error("Insufficient Funds.")
+                        
+            if tc2.button("SELL ALL", use_container_width=True) and trade_ticker:
+                if trade_ticker in st.session_state.paper_portfolio:
+                    raw = fetch_ohlcv(trade_ticker, "1mo")
+                    if not raw.empty:
+                        px_cur = raw["Close"].iloc[-1]
+                        shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
+                        value = shares * px_cur
+                        st.session_state.paper_cash += value
+                        del st.session_state.paper_portfolio[trade_ticker]
+                        st.session_state.paper_history.append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "SELL", "Ticker": trade_ticker, "Price": px_cur, "Shares": shares, "Value": value})
+                        st.success(f"Sold {trade_ticker}")
+                        st.rerun()
+                else:
+                    st.warning(f"You don't own any {trade_ticker}.")
+
+            st.markdown("---")
+            st.markdown("### 📐 Risk Manager")
+            acct_size = st.number_input("Total Account Size ($)", value=st.session_state.paper_cash, step=500.0)
+            risk_pct = st.slider("Risk Limit % per Trade", 0.5, 5.0, 1.0, 0.1)
+            stop_loss_pct = st.number_input("Expected Stop Loss %", value=5.0, step=0.5)
+            
+            risk_amt = (acct_size * risk_pct) / 100
+            max_pos_size = risk_amt / (stop_loss_pct / 100) if stop_loss_pct > 0 else 0
+            
+            st.info(f"**Recommended Risk Profile:**\n- Max Capital at Risk: **${risk_amt:.2f}**\n- Max Position Size: **${max_pos_size:.2f}**")
+
+        with p2:
+            st.markdown("### 🗃️ Open Positions")
+            if st.session_state.paper_portfolio:
+                port_rows = []
+                for k, v in st.session_state.paper_portfolio.items():
+                    raw = fetch_ohlcv(k, "1mo")
+                    current_px = raw["Close"].iloc[-1] if not raw.empty else v['avg_price']
+                    pnl_pct = ((current_px / v['avg_price']) - 1) * 100
+                    port_rows.append({
+                        "Ticker": k,
+                        "Shares": round(v['shares'], 4),
+                        "Avg Entry": f"${v['avg_price']:.2f}",
+                        "Current": f"${current_px:.2f}",
+                        "Market Value": f"${v['shares']*current_px:.2f}",
+                        "PnL %": f"{pnl_pct:+.2f}%"
+                    })
+                st.dataframe(pd.DataFrame(port_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No open positions. Use the terminal to buy assets.")
+                
+            st.markdown("### 📜 Trade History")
+            if st.session_state.paper_history:
+                st.dataframe(pd.DataFrame(st.session_state.paper_history), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No trades executed yet.")
+
+
+    # ════════════════════════════════════════════════════════
+    # Tab 5 — News
     # ════════════════════════════════════════════════════════
     with tab_news:
         st.markdown("### 📰 Market News & Alerts")
@@ -1599,14 +1650,11 @@ def main():
                 for item in news_items:
                     pub_time = item.get("providerPublishTime", time.time())
                     dt_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d %H:%M")
-                    st.markdown(f"""
-                    <a href="{item.get('link', '#')}" target="_blank" style="text-decoration:none;">
-                        <div class="news-card">
-                            <div class="news-title">{item.get('title', 'Headline')}</div>
-                            <div class="news-meta">{item.get('publisher', 'News')} • {dt_str}</div>
-                        </div>
-                    </a>
-                    """, unsafe_allow_html=True)
+                    
+                    # Clean markdown links replacing custom HTML to prevent CSS/stacking bugs
+                    st.markdown(f"#### [{item.get('title', 'Headline')}]({item.get('link', '#')})")
+                    st.caption(f"Published by **{item.get('publisher', 'Yahoo Finance')}** • {dt_str}")
+                    st.divider()
             else:
                 st.info("No news fetched. Check connection.")
                 
@@ -1624,7 +1672,7 @@ def main():
                     st.caption("Unable to fetch indices.")
 
     # ════════════════════════════════════════════════════════
-    # Tab 5 — Settings
+    # Tab 6 — Settings
     # ════════════════════════════════════════════════════════
     with tab_settings:
         s1, s2 = st.columns(2, gap="large")
