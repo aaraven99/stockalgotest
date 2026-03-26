@@ -18,7 +18,7 @@ import streamlit.components.v1 as components
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Trading Terminal Pro",
+    page_title="Trading Terminal",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -442,18 +442,31 @@ def check_auto_scan(universe: List[str]):
     if now - last < interval:
         return
     st.session_state["last_auto_scan"] = now
+    
     with st.spinner("Auto-scan running…"):
         results = scan_universe(tuple(universe[:80]), 80, auto_tune=False)
+        
     if results.empty:
         return
+        
     buys = results[results["Verdict"] == "STRONG BUY"]
-    top = buys.iloc[0] if len(buys) > 0 else results.iloc[0]
+    top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
+    top = top5.iloc[0]
+    
     st.session_state["auto_top_ticker"] = top["Ticker"]
     st.session_state["auto_top_score"]  = top["Score"]
-    title = f"Trading Alert — {top['Ticker']}"
-    body  = f"{top['Verdict']} · Score {top['Score']}/100 · ${top['Price']:.2f}"
+    
+    # Feature: Email Format with top 5 picks
+    title = f"Trading Alert — {len(top5)} Top Picks Detected"
+    
+    body = f"Trading Terminal Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
+    body += "Your Top Picks:\n"
+    for _, row in top5.iterrows():
+        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f}\n"
+
     if st.session_state.get("alert_browser"):
-        push_browser_notification(title, body)
+        push_browser_notification(title, f"{top['Ticker']} is the top pick with score {top['Score']}/100")
+        
     if st.session_state.get("alert_email") and st.session_state.get("alert_email_addr"):
         send_email_alert(
             st.session_state["alert_email_addr"],
@@ -1104,7 +1117,6 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
 
     pb = st.progress(0, "Scanning universe...")
     
-    # Process only requested amount
     target_tickers = tickers[:max_scan]
     
     for i, ticker in enumerate(target_tickers):
@@ -1166,11 +1178,11 @@ def _run_analysis(t: str):
         return None, None, None, None, None, None, None
 
     if len(raw) >= 120:
-        bp, _, _ = optimize_params(raw)
+        bp, _, df = optimize_params(raw)
     else:
         bp = {"rsi": 14, "macd_fast": 12, "macd_slow": 26}
+        df = add_all_indicators(raw, 14, 12, 26)
 
-    df    = add_all_indicators(raw, bp["rsi"], bp["macd_fast"], bp["macd_slow"])
     score, reasons = conviction_score(df)
     signal = build_signals(df)
     rl     = risk_levels(df)
@@ -1313,6 +1325,7 @@ def main():
                             )
 
                             chg_pct = (last["Close"] / df["Close"].iloc[-2] - 1) * 100 if len(df) > 1 else 0
+                            
                             m1, m2, m3, m4, m5, m6 = st.columns(6)
                             m1.metric("Price", f"${last['Close']:.2f}", f"{chg_pct:+.2f}%", help="Last close price and 1-day % change.")
                             m2.metric("RSI",   f"{last['RSI']:.1f}",  help="<30 oversold · >70 overbought")
@@ -1450,7 +1463,7 @@ def main():
 
                     st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
 
-                    display = results.drop(columns=["Heatmap_Size"], errors="ignore")
+                    display = results.drop(columns=["Top Signal", "Heatmap_Size"], errors="ignore")
                     
                     st.dataframe(
                         display, 
