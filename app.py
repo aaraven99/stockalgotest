@@ -332,7 +332,11 @@ def inject_theme(theme: str, font: str):
     st.markdown(f"""<style>
     {font_import}
     .stApp {{background-color:{c['bg']} !important;}}
-    *, body, .stMarkdown, label, p, div {{font-family:{ff} !important;}}
+    
+    /* SAFE FONT OVERRIDE: Applies custom font only to specific text containers to prevent Streamlit UI icon ligatures (arrow_right, fullscreen) from overlapping or breaking */
+    body, p, label, h1, h2, h3, h4, h5, h6, .stMarkdown, th, td, [data-testid="stMetricValue"] {{font-family:{ff} !important;}}
+    .material-symbols-rounded, .material-icons, [class*="material"] {{font-family: 'Material Symbols Rounded', 'Material Icons' !important;}}
+    
     [data-testid="stMetric"] {{background-color:{c['card']};border:1px solid {c['border']};border-radius:8px;padding:14px 18px;}}
     [data-testid="stMetricLabel"] {{color:{c['sub']} !important;font-size:0.72rem;letter-spacing:0.08em;text-transform:uppercase;}}
     [data-testid="stMetricValue"] {{color:{c['text']} !important;font-size:1.3rem;font-weight:700;}}
