@@ -18,7 +18,7 @@ import streamlit.components.v1 as components
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Trading Terminal",
+    page_title="Trading Terminal Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -98,6 +98,22 @@ st.markdown("""
   .pick-price  { color: #d1d4dc; font-size: 0.88rem; margin-top: 4px; font-weight: 600; }
   .pick-chg-up   { color: #26a69a; font-size: 0.82rem; font-weight: 600; }
   .pick-chg-down { color: #ef5350; font-size: 0.82rem; font-weight: 600; }
+
+  /* ── Chrome-like Close Tab Buttons ── */
+  .close-tab-btn > div > div > button {
+      background-color: transparent !important;
+      color: #787b86 !important;
+      border: none !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+      font-size: 1.2rem !important;
+      opacity: 0.3;
+      transition: opacity 0.2s, color 0.2s;
+  }
+  .close-tab-btn > div > div > button:hover {
+      color: #ef4444 !important;
+      opacity: 1.0;
+  }
 
   /* ── Buttons ── */
   .stButton > button {
@@ -254,6 +270,25 @@ def get_universe(mode: str) -> List[str]:
         return ETFS_FUNDS
     return fetch_universe()
 
+# ── Sector Performance Helper ───────────────────────────────────────────────
+@st.cache_data(ttl=60*15)
+def fetch_sector_performance() -> pd.DataFrame:
+    sectors = {
+        "Technology": "XLK", "Financials": "XLF", "Healthcare": "XLV",
+        "Energy": "XLE", "Cons Discret": "XLY", "Industrials": "XLI"
+    }
+    try:
+        df = yf.download(list(sectors.values()), period="5d", progress=False)["Close"]
+        rows = []
+        for name, ticker in sectors.items():
+            if ticker in df.columns:
+                px_cur = df[ticker].iloc[-1]
+                chg_1d = (px_cur / df[ticker].iloc[-2] - 1) * 100 if len(df) > 1 else 0
+                chg_5d = (px_cur / df[ticker].iloc[0] - 1) * 100 if len(df) > 1 else 0
+                rows.append({"Sector": name, "ETF": ticker, "1D %": chg_1d, "5D %": chg_5d})
+        return pd.DataFrame(rows).sort_values("1D %", ascending=False).reset_index(drop=True)
+    except: return pd.DataFrame()
+
 
 # ── Settings init ────────────────────────────────────────────────────────────
 def init_settings():
@@ -281,6 +316,11 @@ def init_settings():
         "paper_cash":       5000.0,
         "paper_portfolio":  {},
         "paper_history":    [],
+        # Layout Personalization defaults
+        "layout_show_reasons": True,
+        "layout_show_levels":  True,
+        "layout_show_kpis":    True,
+        "layout_show_sectors": True,
         # Chart overlay defaults
         "ov_ema20":  True,  "ov_ema50":  True,  "ov_ema200": True,
         "ov_avwap":  True,  "ov_bb":     True,  "ov_super":  True,
@@ -329,13 +369,22 @@ _FONT_CSS = {
 def inject_theme(theme: str, font: str):
     c = _THEMES.get(theme, _THEMES["Dark"])
     font_import, ff = _FONT_CSS.get(font, _FONT_CSS["JetBrains Mono"])
+    
+    # SAFE FONT OVERRIDE logic: strictly apply fonts to our text, avoid polluting Material Symbols
     st.markdown(f"""<style>
     {font_import}
     .stApp {{background-color:{c['bg']} !important;}}
     
-    /* SAFE FONT OVERRIDE: Applies custom font only to specific text containers to prevent Streamlit UI icon ligatures (arrow_right, fullscreen) from overlapping or breaking */
-    body, p, label, h1, h2, h3, h4, h5, h6, .stMarkdown, th, td, [data-testid="stMetricValue"] {{font-family:{ff} !important;}}
-    .material-symbols-rounded, .material-icons, [class*="material"] {{font-family: 'Material Symbols Rounded', 'Material Icons' !important;}}
+    /* Apply font to headers and standard text, EXCLUDING specific icon classes */
+    p:not([class*="material"]), 
+    label, h1, h2, h3, h4, h5, h6, 
+    th, td, div.stMarkdown, 
+    [data-testid="stMetricValue"] {{font-family: {ff}, sans-serif !important;}}
+    
+    /* Explicitly PROTECT material icons from font overrides to fix overlapping bug */
+    .stIcon, [class*="material"], .material-symbols-rounded, .material-icons {{
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+    }}
     
     [data-testid="stMetric"] {{background-color:{c['card']};border:1px solid {c['border']};border-radius:8px;padding:14px 18px;}}
     [data-testid="stMetricLabel"] {{color:{c['sub']} !important;font-size:0.72rem;letter-spacing:0.08em;text-transform:uppercase;}}
@@ -344,12 +393,13 @@ def inject_theme(theme: str, font: str):
     .stTabs [data-baseweb="tab-list"] {{background-color:{c['card']};border-radius:8px;padding:4px;gap:4px;border:1px solid {c['border']};}}
     .stTabs [data-baseweb="tab"] {{color:{c['sub']};font-size:0.8rem;letter-spacing:0.05em;padding:6px 18px;border-radius:6px;}}
     .stTabs [aria-selected="true"] {{background-color:{c['bg']} !important;color:{c['accent']} !important;border-bottom:2px solid {c['accent']};}}
-    .verdict-card {{font-family:{ff} !important;}}
+    .verdict-card {{font-family:{ff}, sans-serif !important;}}
     .risk-card, .reason-box, .pick-card {{background-color:{c['card']};border-color:{c['border']};}}
     div[data-baseweb="select"]>div {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;}}
     div[data-baseweb="input"]>div {{background-color:{c['card']} !important;border-color:{c['border']} !important;}}
-    .stButton>button {{background-color:{c['accent']} !important;border:none !important;font-family:{ff} !important;font-weight:600 !important;}}
-    .stTextInput input, .stNumberInput input, .stTextArea textarea {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;font-family:{ff} !important;}}
+    .stButton>button {{background-color:{c['accent']} !important;color: #fff !important; border:none !important;border-radius:6px !important;font-family:{ff}, sans-serif !important;font-weight:600 !important;}}
+    .stButton>button:hover {{background-color: #1e53e5 !important;}}
+    .stTextInput input, .stNumberInput input, .stTextArea textarea {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['text']} !important;font-family:{ff}, sans-serif !important;}}
     .streamlit-expanderHeader {{background-color:{c['card']} !important;border-color:{c['border']} !important;color:{c['sub']} !important;border-radius:6px !important;}}
     .stCheckbox label {{color:{c['sub']} !important;}}
     </style>""", unsafe_allow_html=True)
@@ -1139,6 +1189,17 @@ def main():
     # Run auto-scan if due
     check_auto_scan(universe)
 
+    # ── Sidebar Feature: Advanced Watchlists / Sector Rotation ──
+    with st.sidebar:
+        if st.session_state.get("layout_show_sectors", True):
+            st.markdown("### 🔄 Sector Rotation Watchlist")
+            sectors_df = fetch_sector_performance()
+            if not sectors_df.empty:
+                for _, row in sectors_df.iterrows():
+                    st.metric(f"{row['Sector']} ({row['ETF']})", f"{row['1D %']:+.2f}%", f"{row['5D %']:+.2f}% (5D)")
+            else:
+                st.caption("Unable to fetch sector data.")
+
     # Auto-scan banner when it has fired
     top_t = st.session_state.get("auto_top_ticker", "")
     if top_t:
@@ -1220,15 +1281,22 @@ def main():
                 workspace_tabs = st.tabs(st.session_state.active_tickers)
                 for idx, t in enumerate(st.session_state.active_tickers):
                     with workspace_tabs[idx]:
+                        
+                        # Feature: Unobtrusive Chrome-like Close Button
+                        close_col1, close_col2 = st.columns([15, 1])
+                        with close_col2:
+                            st.markdown('<div class="close-tab-btn">', unsafe_allow_html=True)
+                            if st.button("✖", key=f"close_{t}", help="Close this tab"):
+                                st.session_state.active_tickers.remove(t)
+                                sync_settings()
+                                st.rerun()
+                            st.markdown('</div>', unsafe_allow_html=True)
+
                         with st.spinner(f"Analyzing {t} (Fetching 5y history for infinite scroll)…"):
                             df, score_series, signal, reasons, rl, bp, raw = _run_analysis(t)
 
                         if df is None:
                             st.error(f"No data found for **{t}**. Check the symbol and try again.")
-                            if st.button(f"Close {t} Tab"):
-                                st.session_state.active_tickers.remove(t)
-                                sync_settings()
-                                st.rerun()
                         else:
                             last       = df.iloc[-1]
                             last_score = float(score_series.iloc[-1])
@@ -1237,19 +1305,12 @@ def main():
                             cls_map  = {"STRONG BUY":"verdict-buy","STRONG SELL":"verdict-sell","NEUTRAL":"verdict-neutral"}
                             icon_map = {"STRONG BUY":"▲","STRONG SELL":"▼","NEUTRAL":"◆"}
                             
-                            col_v1, col_v2 = st.columns([10, 1])
-                            with col_v1:
-                                st.markdown(
-                                    f'<div class="verdict-card {cls_map.get(verdict,"verdict-neutral")}">'
-                                    f'{icon_map.get(verdict,"")} &nbsp; {t} &nbsp;·&nbsp; {verdict} &nbsp;·&nbsp; Score {last_score:.0f} / 100'
-                                    f'</div>',
-                                    unsafe_allow_html=True,
-                                )
-                            with col_v2:
-                                if st.button("✖", key=f"close_{t}", help="Close this tab"):
-                                    st.session_state.active_tickers.remove(t)
-                                    sync_settings()
-                                    st.rerun()
+                            st.markdown(
+                                f'<div class="verdict-card {cls_map.get(verdict,"verdict-neutral")}">'
+                                f'{icon_map.get(verdict,"")} &nbsp; {t} &nbsp;·&nbsp; {verdict} &nbsp;·&nbsp; Score {last_score:.0f} / 100'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
 
                             chg_pct = (last["Close"] / df["Close"].iloc[-2] - 1) * 100 if len(df) > 1 else 0
                             m1, m2, m3, m4, m5, m6 = st.columns(6)
@@ -1260,29 +1321,31 @@ def main():
                             m5.metric("CMF",   f"{last['CMF']:.3f}",  help=">0 = money flowing in · <0 = money leaving")
                             m6.metric("MFI",   f"{last['MFI']:.1f}",  help="Volume-weighted RSI. <20 oversold · >80 overbought")
 
-                            st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 6px 0">WHY THIS SIGNAL</div>', unsafe_allow_html=True)
-                            for i, r in enumerate(reasons, 1):
-                                st.markdown(f'<div class="reason-box"><span style="color:#3b82f6;font-weight:700">{i}.</span> {r}</div>', unsafe_allow_html=True)
+                            if st.session_state.get("layout_show_reasons", True):
+                                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 6px 0">WHY THIS SIGNAL</div>', unsafe_allow_html=True)
+                                for i, r in enumerate(reasons, 1):
+                                    st.markdown(f'<div class="reason-box"><span style="color:#3b82f6;font-weight:700">{i}.</span> {r}</div>', unsafe_allow_html=True)
 
-                            pct_stop = abs(rl["entry"] - rl["stop"]) / rl["entry"] * 100
-                            pct_pt1  = (rl["pt1"] - rl["entry"]) / rl["entry"] * 100
-                            pct_pt2  = (rl["pt2"] - rl["entry"]) / rl["entry"] * 100
-                            pct_pt3  = (rl["pt3"] - rl["entry"]) / rl["entry"] * 100
-                            rr1 = pct_pt1 / pct_stop if pct_stop else 0
-                            st.markdown(f'<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 4px 0">TRADE LEVELS &nbsp;<span style="color:#4b5563;font-size:0.6rem">ATR ${rl["atr"]:.2f} · R:R to T1 = {rr1:.1f}x</span></div>', unsafe_allow_html=True)
-                            st.markdown(f"""
-                            <div class="risk-card">
-                              <div class="risk-row"><span class="risk-label">Entry</span>
-                                <span style="font-weight:700">${rl['entry']:.2f}</span></div>
-                              <div class="risk-row"><span class="risk-label">🛑 Stop Loss</span>
-                                <span class="risk-stop">${rl['stop']:.2f} <span style="color:#6b7280;font-size:0.78rem">(-{pct_stop:.1f}%)</span></span></div>
-                              <div class="risk-row"><span class="risk-label">🎯 Target 1</span>
-                                <span class="risk-pt1">${rl['pt1']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt1:.1f}%)</span></span></div>
-                              <div class="risk-row"><span class="risk-label">🎯 Target 2</span>
-                                <span class="risk-pt2">${rl['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt2:.1f}%)</span></span></div>
-                              <div class="risk-row"><span class="risk-label">🎯 Target 3</span>
-                                <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt3:.1f}%)</span></span></div>
-                            </div>""", unsafe_allow_html=True)
+                            if st.session_state.get("layout_show_levels", True):
+                                pct_stop = abs(rl["entry"] - rl["stop"]) / rl["entry"] * 100
+                                pct_pt1  = (rl["pt1"] - rl["entry"]) / rl["entry"] * 100
+                                pct_pt2  = (rl["pt2"] - rl["entry"]) / rl["entry"] * 100
+                                pct_pt3  = (rl["pt3"] - rl["entry"]) / rl["entry"] * 100
+                                rr1 = pct_pt1 / pct_stop if pct_stop else 0
+                                st.markdown(f'<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 4px 0">TRADE LEVELS &nbsp;<span style="color:#4b5563;font-size:0.6rem">ATR ${rl["atr"]:.2f} · R:R to T1 = {rr1:.1f}x</span></div>', unsafe_allow_html=True)
+                                st.markdown(f"""
+                                <div class="risk-card">
+                                  <div class="risk-row"><span class="risk-label">Entry</span>
+                                    <span style="font-weight:700">${rl['entry']:.2f}</span></div>
+                                  <div class="risk-row"><span class="risk-label">🛑 Stop Loss</span>
+                                    <span class="risk-stop">${rl['stop']:.2f} <span style="color:#6b7280;font-size:0.78rem">(-{pct_stop:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Target 1</span>
+                                    <span class="risk-pt1">${rl['pt1']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt1:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Target 2</span>
+                                    <span class="risk-pt2">${rl['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt2:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Target 3</span>
+                                    <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt3:.1f}%)</span></span></div>
+                                </div>""", unsafe_allow_html=True)
 
                             st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
 
@@ -1387,8 +1450,6 @@ def main():
 
                     st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
 
-                    # Removed Styler.apply to prevent the arrow_right overlapping bug.
-                    # Using clean, raw dataframe layout with native Streamlit LinkColumn.
                     display = results.drop(columns=["Heatmap_Size"], errors="ignore")
                     
                     st.dataframe(
@@ -1482,37 +1543,39 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
 
-                    # Advanced KPIs
-                    st.markdown("#### Advanced KPIs")
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Win Rate",        f"{metrics.win_rate:.1%}",      help="% of trades that made money.")
-                    m2.metric("Profit Factor",   f"{metrics.profit_factor:.2f}", help="Total wins ÷ losses. >1.5 = strong.")
-                    m3.metric("Expectancy",      f"{metrics.expectancy:.2%}",    help="Expected average return per trade.")
-                    m4.metric("Sharpe",         f"{metrics.sharpe:.2f}",        help="Risk-adjusted return. >1 good · >2 excellent")
-                    
-                    m5, m6, m7, m8 = st.columns(4)
-                    m5.metric("vs B&H",          f"{(metrics.total_return - metrics.buy_hold_return):+.1%}", help="Strategy vs Buy & Hold.")
-                    m6.metric("Max Drawdown",   f"{metrics.max_drawdown:.1%}",  help="Worst peak-to-trough loss.")
-                    m7.metric("Avg Daily Range", f"{metrics.adr:.2f}%", help="Current volatility.")
-                    m8.metric("Market Regime", "Trending" if metrics.adr > 2.0 else "Choppy", help="Determined by ADR.")
+                    if st.session_state.get("layout_show_kpis", True):
+                        # Advanced KPIs
+                        st.markdown("#### Advanced KPIs")
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Win Rate",        f"{metrics.win_rate:.1%}",      help="% of trades that made money.")
+                        m2.metric("Profit Factor",   f"{metrics.profit_factor:.2f}", help="Total wins ÷ losses. >1.5 = strong.")
+                        m3.metric("Expectancy",      f"{metrics.expectancy:.2%}",    help="Expected average return per trade.")
+                        m4.metric("Sharpe",         f"{metrics.sharpe:.2f}",        help="Risk-adjusted return. >1 good · >2 excellent")
+                        
+                        m5, m6, m7, m8 = st.columns(4)
+                        m5.metric("vs B&H",          f"{(metrics.total_return - metrics.buy_hold_return):+.1%}", help="Strategy vs Buy & Hold.")
+                        m6.metric("Max Drawdown",   f"{metrics.max_drawdown:.1%}",  help="Worst peak-to-trough loss.")
+                        m7.metric("Avg Daily Range", f"{metrics.adr:.2f}%", help="Current volatility.")
+                        m8.metric("Market Regime", "Trending" if metrics.adr > 2.0 else "Choppy", help="Determined by ADR.")
 
-                    # Scatter Plot for PnL
-                    st.plotly_chart(build_pnl_scatter(df_bt, sig_bt), use_container_width=True, config=_PCFG)
+                        # Scatter Plot for PnL
+                        st.plotly_chart(build_pnl_scatter(df_bt, sig_bt), use_container_width=True, config=_PCFG)
 
-                    # Trade levels
-                    pct_s = abs(rl_bt["entry"]-rl_bt["stop"])/rl_bt["entry"]*100
-                    pct_1 = (rl_bt["pt1"]-rl_bt["entry"])/rl_bt["entry"]*100
-                    pct_2 = (rl_bt["pt2"]-rl_bt["entry"])/rl_bt["entry"]*100
-                    pct_3 = (rl_bt["pt3"]-rl_bt["entry"])/rl_bt["entry"]*100
-                    st.markdown(f"""
-                    <div class="risk-card" style="margin:14px 0 18px 0">
-                      <div style="font-size:0.65rem;color:#4b5563;margin-bottom:8px">Current levels · ATR ${rl_bt['atr']:.2f} · params auto-tuned for {bt_ticker}</div>
-                      <div class="risk-row"><span class="risk-label">Entry</span><span style="font-weight:700">${rl_bt['entry']:.2f}</span></div>
-                      <div class="risk-row"><span class="risk-label">🛑 Stop</span><span class="risk-stop">${rl_bt['stop']:.2f} <span style="color:#6b7280;font-size:0.78rem">(-{pct_s:.1f}%)</span></span></div>
-                      <div class="risk-row"><span class="risk-label">🎯 T1</span><span class="risk-pt1">${rl_bt['pt1']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_1:.1f}%)</span></span></div>
-                      <div class="risk-row"><span class="risk-label">🎯 T2</span><span class="risk-pt2">${rl_bt['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_2:.1f}%)</span></span></div>
-                      <div class="risk-row"><span class="risk-label">🎯 T3</span><span class="risk-pt3">${rl_bt['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_3:.1f}%)</span></span></div>
-                    </div>""", unsafe_allow_html=True)
+                    if st.session_state.get("layout_show_levels", True):
+                        # Trade levels
+                        pct_s = abs(rl_bt["entry"]-rl_bt["stop"])/rl_bt["entry"]*100
+                        pct_1 = (rl_bt["pt1"]-rl_bt["entry"])/rl_bt["entry"]*100
+                        pct_2 = (rl_bt["pt2"]-rl_bt["entry"])/rl_bt["entry"]*100
+                        pct_3 = (rl_bt["pt3"]-rl_bt["entry"])/rl_bt["entry"]*100
+                        st.markdown(f"""
+                        <div class="risk-card" style="margin:14px 0 18px 0">
+                          <div style="font-size:0.65rem;color:#4b5563;margin-bottom:8px">Current levels · ATR ${rl_bt['atr']:.2f} · params auto-tuned for {bt_ticker}</div>
+                          <div class="risk-row"><span class="risk-label">Entry</span><span style="font-weight:700">${rl_bt['entry']:.2f}</span></div>
+                          <div class="risk-row"><span class="risk-label">🛑 Stop</span><span class="risk-stop">${rl_bt['stop']:.2f} <span style="color:#6b7280;font-size:0.78rem">(-{pct_s:.1f}%)</span></span></div>
+                          <div class="risk-row"><span class="risk-label">🎯 T1</span><span class="risk-pt1">${rl_bt['pt1']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_1:.1f}%)</span></span></div>
+                          <div class="risk-row"><span class="risk-label">🎯 T2</span><span class="risk-pt2">${rl_bt['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_2:.1f}%)</span></span></div>
+                          <div class="risk-row"><span class="risk-label">🎯 T3</span><span class="risk-pt3">${rl_bt['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_3:.1f}%)</span></span></div>
+                        </div>""", unsafe_allow_html=True)
 
                     # Equity curve in dollar terms
                     s_eq_d  = s_eq  * start_cap
@@ -1679,10 +1742,11 @@ def main():
     # Tab 6 — Settings
     # ════════════════════════════════════════════════════════
     with tab_settings:
+        st.markdown("### User Preferences")
         s1, s2 = st.columns(2, gap="large")
 
         with s1:
-            st.markdown("#### Appearance")
+            st.markdown("#### Appearance & Formatting")
             all_themes = list(_THEMES.keys())
             theme_choice = st.selectbox(
                 "Color theme", all_themes,
@@ -1705,6 +1769,13 @@ def main():
                 sync_settings()
                 st.rerun()
 
+            st.markdown("#### Layout & Workflow Customization")
+            st.session_state.layout_show_reasons = st.checkbox("Show 'Why This Signal' Explanations", value=st.session_state.get("layout_show_reasons", True))
+            st.session_state.layout_show_levels = st.checkbox("Show Risk/Target Levels UI", value=st.session_state.get("layout_show_levels", True))
+            st.session_state.layout_show_kpis = st.checkbox("Show Advanced KPIs (Backtest Tab)", value=st.session_state.get("layout_show_kpis", True))
+            st.session_state.layout_show_sectors = st.checkbox("Show Sector Watchlist (Sidebar)", value=st.session_state.get("layout_show_sectors", True))
+
+        with s2:
             st.markdown("#### Scanner Universe")
             scan_options = ["Major ETFs & Funds", "S&P 500 + Nasdaq-100", "S&P 500", "Nasdaq-100", "Dow Jones 30", "Custom List"]
             scan_list_choice = st.selectbox(
@@ -1729,7 +1800,6 @@ def main():
                 parsed = [t.strip().upper() for t in custom_raw.replace(","," ").split() if t.strip()]
                 st.caption(f"{len(parsed)} tickers entered: {', '.join(parsed[:10])}{'…' if len(parsed)>10 else ''}")
 
-        with s2:
             st.markdown("#### Alerts & Auto-Scan")
             auto_on = st.toggle(
                 "Enable auto-scan",
