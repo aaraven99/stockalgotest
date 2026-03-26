@@ -1,5 +1,7 @@
 import math
+import os
 import smtplib
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -23,6 +25,64 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── LocalStorage Custom Component Bridge ─────────────────────────────────────
+@st.cache_resource
+def get_ls_component():
+    """Builds an invisible Javascript component to natively sync Python state to browser LocalStorage."""
+    html_code = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <script>
+      function sendMessageToStreamlitClient(type, data) {
+        var outData = Object.assign({isStreamlitMessage: true, type: type}, data);
+        window.parent.postMessage(outData, "*");
+      }
+      function init() {
+        sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
+      }
+      function setFrameHeight() {
+        sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: 0});
+      }
+      window.addEventListener("message", function(event) {
+        if (event.data.type !== "streamlit:render") return;
+        var args = event.data.args;
+        
+        if (args.action === 'save') {
+          if (window.lastSaveCounter === args.counter) return;
+          window.lastSaveCounter = args.counter;
+          try {
+            window.localStorage.setItem(args.ls_key, JSON.stringify(args.data));
+            // Silent save to prevent infinite rerun loops
+          } catch(e) {
+            console.error("Save failed", e);
+          }
+        } else if (args.action === 'load') {
+          if (window.hasLoaded) return;
+          window.hasLoaded = true;
+          try {
+            var val = window.localStorage.getItem(args.ls_key);
+            sendMessageToStreamlitClient("streamlit:setComponentValue", {value: {status: "loaded", data: val ? JSON.parse(val) : null}});
+          } catch(e) {
+            sendMessageToStreamlitClient("streamlit:setComponentValue", {value: {status: "error", error: e.message}});
+          }
+        }
+      });
+      init();
+      setFrameHeight();
+    </script>
+    </head>
+    <body></body>
+    </html>
+    """
+    tmp_dir = tempfile.mkdtemp()
+    with open(os.path.join(tmp_dir, "index.html"), "w") as f:
+        f.write(html_code)
+    return components.declare_component("local_storage_sync", path=tmp_dir)
+
+ls_sync = get_ls_component()
+
 
 # ── Global CSS (TradingView-inspired) ────────────────────────────────────────
 st.markdown("""
@@ -219,14 +279,12 @@ def fetch_universe() -> List[str]:
         return fallback
 
 
-# ── Additional universe lists ────────────────────────────────────────────────
 DOW30 = sorted([
     "AAPL","AMGN","AXP","BA","CAT","CRM","CSCO","CVX","DIS","DOW",
     "GS","HD","HON","IBM","JNJ","JPM","KO","MCD","MMM","MRK",
     "MSFT","NKE","PG","TRV","UNH","V","VZ","WBA","WMT","INTC",
 ])
 
-# Major ETFs & Funds
 ETFS_FUNDS = sorted([
     "SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "ARKK", "GLD", "SLV", "USO", 
     "UNG", "TLT", "TMF", "XLF", "XLK", "XLE", "XLU", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE"
@@ -270,7 +328,6 @@ def get_universe(mode: str) -> List[str]:
         return ETFS_FUNDS
     return fetch_universe()
 
-# ── Sector Performance Helper ───────────────────────────────────────────────
 @st.cache_data(ttl=60*15)
 def fetch_sector_performance() -> pd.DataFrame:
     sectors = {
@@ -290,55 +347,36 @@ def fetch_sector_performance() -> pd.DataFrame:
     except: return pd.DataFrame()
 
 
-# ── Settings init ────────────────────────────────────────────────────────────
-def init_settings():
-    # Persist via query params for reloads
-    query_params = st.query_params
+# ── Settings initialization ──────────────────────────────────────────────────
+PERSISTENT_KEYS = [
+    "theme", "font", "scan_list", "custom_tickers", "auto_scan",
+    "alert_browser", "alert_email", "alert_email_addr", "smtp_user", "smtp_pass",
+    "scan_interval", "active_tickers", "az_period", "starting_capital",
+    "paper_cash", "paper_portfolio", "paper_history",
+    "layout_show_reasons", "layout_show_levels", "layout_show_kpis", "layout_show_sectors",
+    "ov_ema20", "ov_ema50", "ov_ema200", "ov_avwap", "ov_bb", "ov_super",
+    "ov_ichi", "ov_fib", "ov_psar", "sc_rsi", "sc_macd", "sc_vol",
+    "sc_stoch", "sc_willr", "last_auto_scan"
+]
 
+def init_defaults():
     defaults = {
-        "theme":            query_params.get("theme", "TradingView"),
-        "font":             query_params.get("font", "JetBrains Mono"),
-        "scan_list":        query_params.get("scan_list", "S&P 500 + Nasdaq-100"),
-        "custom_tickers":   "",
-        "auto_scan":        False,
-        "alert_browser":    False,
-        "alert_email":      False,
-        "alert_email_addr": "",
-        "smtp_user":        "",
-        "smtp_pass":        "",
-        "scan_interval":    15,
-        "last_auto_scan":   0.0,
-        "auto_top_ticker":  "",
-        "auto_top_score":   0.0,
-        "active_tickers":   query_params.get("tabs", "AAPL").split(",") if query_params.get("tabs") else ["AAPL"],
-        "az_period":        "1y",
-        "starting_capital": 5000.0,
-        "paper_cash":       5000.0,
-        "paper_portfolio":  {},
-        "paper_history":    [],
-        # Layout Personalization defaults
-        "layout_show_reasons": True,
-        "layout_show_levels":  True,
-        "layout_show_kpis":    True,
-        "layout_show_sectors": True,
-        # Chart overlay defaults
-        "ov_ema20":  True,  "ov_ema50":  True,  "ov_ema200": True,
-        "ov_avwap":  True,  "ov_bb":     True,  "ov_super":  True,
-        "ov_ichi":   False, "ov_fib":    False, "ov_psar":   False,
-        # Sub-chart defaults
-        "sc_rsi":    True,  "sc_macd":   True,  "sc_vol":    True,
-        "sc_stoch":  False, "sc_willr":  False,
+        "theme": "TradingView", "font": "JetBrains Mono", "scan_list": "S&P 500 + Nasdaq-100",
+        "custom_tickers": "", "auto_scan": False, "alert_browser": False,
+        "alert_email": False, "alert_email_addr": "", "smtp_user": "", "smtp_pass": "",
+        "scan_interval": 15, "active_tickers": ["AAPL"], "az_period": "1y",
+        "starting_capital": 5000.0, "paper_cash": 5000.0, "paper_portfolio": {},
+        "paper_history": [], "layout_show_reasons": True, "layout_show_levels": True,
+        "layout_show_kpis": True, "layout_show_sectors": True,
+        "ov_ema20": True, "ov_ema50": True, "ov_ema200": True, "ov_avwap": True,
+        "ov_bb": True, "ov_super": True, "ov_ichi": False, "ov_fib": False,
+        "ov_psar": False, "sc_rsi": True, "sc_macd": True, "sc_vol": True,
+        "sc_stoch": False, "sc_willr": False,
+        "save_counter": 0, "last_auto_scan": 0.0
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-def sync_settings():
-    """Sync persistent settings to URL Query Params"""
-    st.query_params["theme"] = st.session_state.theme
-    st.query_params["font"] = st.session_state.font
-    st.query_params["scan_list"] = st.session_state.scan_list
-    st.query_params["tabs"] = ",".join(st.session_state.active_tickers)
 
 
 # ── Theme CSS injection ───────────────────────────────────────────────────────
@@ -370,7 +408,6 @@ def inject_theme(theme: str, font: str):
     c = _THEMES.get(theme, _THEMES["Dark"])
     font_import, ff = _FONT_CSS.get(font, _FONT_CSS["JetBrains Mono"])
     
-    # SAFE FONT OVERRIDE logic: strictly apply fonts to our text, avoid polluting Material Symbols
     st.markdown(f"""<style>
     {font_import}
     .stApp {{background-color:{c['bg']} !important;}}
@@ -417,19 +454,34 @@ def send_email_alert(to_addr: str, smtp_user: str, smtp_pass: str, subject: str,
             s.login(smtp_user, smtp_pass)
             s.sendmail(smtp_user, to_addr, msg.as_string())
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Failed to send email: {e}")
         return False
 
 
 # ── Browser notification JS injector ─────────────────────────────────────────
 def push_browser_notification(title: str, body: str):
-    components.html(f"""<script>
+    components.html(f"""
+    <script>
     (function(){{
-      if(Notification.permission==='granted'){{
-        new Notification({repr(title)},{{body:{repr(body)},icon:'https://cdn-icons-png.flaticon.com/32/2168/2168252.png'}});
-      }}
+        if (window.Notification && Notification.permission === 'granted') {{
+            var notification = new Notification("{title}", {{
+                body: "{body}",
+                icon: "https://cdn-icons-png.flaticon.com/32/2168/2168252.png"
+            }});
+        }} else if (window.Notification && Notification.permission !== 'denied') {{
+            Notification.requestPermission().then(function (permission) {{
+                if (permission === 'granted') {{
+                    var notification = new Notification("{title}", {{
+                        body: "{body}",
+                        icon: "https://cdn-icons-png.flaticon.com/32/2168/2168252.png"
+                    }});
+                }}
+            }});
+        }}
     }})();
-    </script>""", height=0)
+    </script>
+    """, height=1, width=1)
 
 
 # ── Auto-scan logic ───────────────────────────────────────────────────────────
@@ -439,16 +491,20 @@ def check_auto_scan(universe: List[str]):
     interval = st.session_state.get("scan_interval", 15) * 60
     now = time.time()
     last = st.session_state.get("last_auto_scan", 0.0)
+    
     if now - last < interval:
         return
+        
     st.session_state["last_auto_scan"] = now
     
     with st.spinner(f"Auto-scan running on all {len(universe)} stocks…"):
-        # FIX: Use len(universe) instead of 80 to scan the entire selected list
         results = scan_universe(tuple(universe), len(universe), auto_tune=False)
         
     if results.empty:
         return
+        
+    # Save the background scan to memory so the Scanner Tab can display it
+    st.session_state["last_scan_results"] = results
         
     buys = results[results["Verdict"] == "STRONG BUY"]
     top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
@@ -461,20 +517,24 @@ def check_auto_scan(universe: List[str]):
     st.session_state["auto_top_ticker"] = top["Ticker"]
     st.session_state["auto_top_score"]  = top["Score"]
     
-    # Feature: Email Format with top 5 picks
-    title = f"Trading Alert — Top Picks Detected"
+    # Format comprehensive Email with Top 5 Picks
+    title = f"Trading Alert — Top {len(top5)} Picks Detected"
     
     body = f"Trading Terminal Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
-    body += "Your Top 5 Picks:\n\n"
+    body += "Your Top Picks:\n\n"
     for _, row in top5.iterrows():
         body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f} | RS vs SPY: {row['RS vs SPY']}%\n"
         
     body += f"\nOpen the Trading Terminal to view charts and strategy levels for {top['Ticker']}."
 
+    # Trigger Browser Notification safely
     if st.session_state.get("alert_browser"):
-        push_browser_notification(title, f"{top['Ticker']} is the top pick with score {top['Score']}/100")
+        st.session_state["pending_browser_notif"] = {
+            "title": title, 
+            "body": f"{top['Ticker']} is the top pick with score {top['Score']}/100"
+        }
         
-    # Email handling with feedback
+    # Email handling with active user feedback toasts
     email_enabled = st.session_state.get("alert_email", False)
     email_addr = st.session_state.get("alert_email_addr", "").strip()
     smtp_u = st.session_state.get("smtp_user", "").strip()
@@ -484,7 +544,7 @@ def check_auto_scan(universe: List[str]):
         if email_addr and smtp_u and smtp_p:
             success = send_email_alert(email_addr, smtp_u, smtp_p, title, body)
             if success:
-                st.toast(f"✅ Auto-scan email successfully sent to {email_addr}!")
+                st.toast(f"✅ Auto-scan email successfully sent to {email_addr}!", icon="✅")
             else:
                 st.toast("⚠️ Auto-scan email failed. Check your App Password and SMTP details.", icon="⚠️")
         else:
@@ -494,7 +554,6 @@ def check_auto_scan(universe: List[str]):
 
 @st.cache_data(ttl=60 * 60)
 def fetch_ohlcv(ticker: str, period: str = "5y") -> pd.DataFrame:
-    # Feature: Always fetch max/5y for infinite scroll capabilities
     df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
     if df.empty:
         return df
@@ -863,6 +922,7 @@ def backtest_strategy(df: pd.DataFrame, signal: pd.Series) -> StrategyMetrics:
         adr            = float(adr)
     )
 
+@st.cache_data(ttl=60 * 60, show_spinner=False)
 def optimize_params(raw: pd.DataFrame, fast: bool = False) -> Tuple[Dict[str, int], StrategyMetrics, pd.DataFrame]:
     best_obj, best_params, best_metrics, best_df = None, None, None, None
     # Feature: fast_optimize for scanner so it doesn't freeze
@@ -1187,7 +1247,7 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
 # ============================================================
 _PCFG = {"scrollZoom": True, "displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
-
+@st.cache_data(ttl=60 * 15, show_spinner=False)
 def _run_analysis(t: str):
     """Fetch 5y data, silently calibrate parameters, and return everything needed to render results."""
     raw = fetch_ohlcv(t, "5y")
@@ -1207,7 +1267,21 @@ def _run_analysis(t: str):
 
 
 def main():
-    init_settings()
+    
+    # Intercept initialization block for Local Storage loader
+    if "ls_loaded" not in st.session_state:
+        init_defaults() # populate defaults first
+        load_res = ls_sync(action="load", ls_key="trading_term_v5", key="ls_loader")
+        if load_res is None:
+            st.spinner("Syncing local workspace...")
+            st.stop()
+        else:
+            if load_res.get("status") == "loaded" and load_res.get("data"):
+                # Apply restored data safely to session state
+                for k, v in load_res["data"].items():
+                    st.session_state[k] = v
+            st.session_state["ls_loaded"] = True
+            st.rerun()
 
     # Apply theme / font overrides
     inject_theme(st.session_state["theme"], st.session_state["font"])
@@ -1261,7 +1335,6 @@ def main():
                 
                 if ticker_input and ticker_input not in st.session_state.active_tickers:
                     st.session_state.active_tickers.append(ticker_input)
-                    sync_settings()
                     st.rerun()
 
                 period = st.selectbox(
@@ -1317,7 +1390,6 @@ def main():
                             st.markdown('<div class="close-tab-btn">', unsafe_allow_html=True)
                             if st.button("✖", key=f"close_{t}", help="Close this tab"):
                                 st.session_state.active_tickers.remove(t)
-                                sync_settings()
                                 st.rerun()
                             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1433,62 +1505,63 @@ def main():
                 st.warning("Your selected universe is empty. Please select a valid list in Settings.")
             else:
                 with st.spinner(f"Scanning {min(limit, len(universe))} stocks (this may take a moment)…"):
-                    results = scan_universe(tuple(universe), limit, auto_tune)
+                    st.session_state["last_scan_results"] = scan_universe(tuple(universe), limit, auto_tune)
 
-                if results.empty:
-                    st.warning("No data returned. Try again in a moment.")
-                else:
-                    buys  = results[results["Verdict"] == "STRONG BUY"]
-                    sells = results[results["Verdict"] == "STRONG SELL"]
+        # Displays results if a manual scan OR an auto-scan was completed
+        if "last_scan_results" in st.session_state and not st.session_state["last_scan_results"].empty:
+            results = st.session_state["last_scan_results"]
+            
+            buys  = results[results["Verdict"] == "STRONG BUY"]
+            sells = results[results["Verdict"] == "STRONG SELL"]
 
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Scanned",      len(results),                                    help="Total stocks analyzed.")
-                    c2.metric("Strong Buys",  len(buys),                                       help="Score ≥ 72 — top bullish setups.")
-                    c3.metric("Strong Sells", len(sells),                                      help="Score ≤ 38 — most bearish readings.")
-                    c4.metric("Neutral",      len(results) - len(buys) - len(sells),   help="Mixed signals, no clear edge.")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Scanned",      len(results),                                    help="Total stocks analyzed.")
+            c2.metric("Strong Buys",  len(buys),                                       help="Score ≥ 72 — top bullish setups.")
+            c3.metric("Strong Sells", len(sells),                                      help="Score ≤ 38 — most bearish readings.")
+            c4.metric("Neutral",      len(results) - len(buys) - len(sells),   help="Mixed signals, no clear edge.")
 
-                    top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
-                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#10b981;margin:22px 0 10px 0">TOP PICKS</div>', unsafe_allow_html=True)
-                    pick_cols = st.columns(min(len(top5), 5))
-                    for col, (_, row) in zip(pick_cols, top5.iterrows()):
-                        chg_cls   = "pick-chg-up" if row["1D Chg%"] >= 0 else "pick-chg-down"
-                        chg_arrow = "▲" if row["1D Chg%"] >= 0 else "▼"
-                        rs_color  = "#34d399" if row["RS vs SPY"] >= 0 else "#f87171"
-                        col.markdown(f"""
-                        <div class="pick-card">
-                          <div class="pick-ticker">{row['Ticker']}</div>
-                          <div class="pick-score">{row['Score']}</div>
-                          <div style="color:#8b949e;font-size:0.65rem;margin-bottom:6px">/ 100</div>
-                          <div class="pick-price">${row['Price']:.2f}</div>
-                          <div class="{chg_cls}">{chg_arrow} {abs(row['1D Chg%']):.2f}%</div>
-                          <div style="color:{rs_color};font-size:0.78rem;margin-top:6px">vs SPY {row['RS vs SPY']:+.1f}%</div>
-                          <div style="color:#4b5563;font-size:0.68rem;margin-top:6px">RSI {row['RSI']:.0f} · Stop ${row['Stop Loss']:.2f}</div>
-                        </div>""", unsafe_allow_html=True)
+            top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
+            st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#10b981;margin:22px 0 10px 0">TOP PICKS</div>', unsafe_allow_html=True)
+            pick_cols = st.columns(min(len(top5), 5))
+            for col, (_, row) in zip(pick_cols, top5.iterrows()):
+                chg_cls   = "pick-chg-up" if row["1D Chg%"] >= 0 else "pick-chg-down"
+                chg_arrow = "▲" if row["1D Chg%"] >= 0 else "▼"
+                rs_color  = "#34d399" if row["RS vs SPY"] >= 0 else "#f87171"
+                col.markdown(f"""
+                <div class="pick-card">
+                  <div class="pick-ticker">{row['Ticker']}</div>
+                  <div class="pick-score">{row['Score']}</div>
+                  <div style="color:#8b949e;font-size:0.65rem;margin-bottom:6px">/ 100</div>
+                  <div class="pick-price">${row['Price']:.2f}</div>
+                  <div class="{chg_cls}">{chg_arrow} {abs(row['1D Chg%']):.2f}%</div>
+                  <div style="color:{rs_color};font-size:0.78rem;margin-top:6px">vs SPY {row['RS vs SPY']:+.1f}%</div>
+                  <div style="color:#4b5563;font-size:0.68rem;margin-top:6px">RSI {row['RSI']:.0f} · Stop ${row['Stop Loss']:.2f}</div>
+                </div>""", unsafe_allow_html=True)
 
-                    # Heatmap of results
-                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
-                    results["Heatmap_Size"] = 1
-                    fig_hm = px.treemap(
-                        results, path=["Verdict", "Ticker"], values="Heatmap_Size",
-                        color="Score", color_continuous_scale=["#ef4444", "#4b5563", "#10b981"],
-                        range_color=[30, 75]
-                    )
-                    tc = _THEMES.get(st.session_state.get("theme", "TradingView"), _THEMES["TradingView"])
-                    fig_hm.update_layout(paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"], font=dict(color=tc["text"]), margin=dict(t=0, l=0, r=0, b=0))
-                    st.plotly_chart(fig_hm, use_container_width=True)
+            # Heatmap of results
+            st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
+            results["Heatmap_Size"] = 1
+            fig_hm = px.treemap(
+                results, path=["Verdict", "Ticker"], values="Heatmap_Size",
+                color="Score", color_continuous_scale=["#ef4444", "#4b5563", "#10b981"],
+                range_color=[30, 75]
+            )
+            tc = _THEMES.get(st.session_state.get("theme", "TradingView"), _THEMES["TradingView"])
+            fig_hm.update_layout(paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"], font=dict(color=tc["text"]), margin=dict(t=0, l=0, r=0, b=0))
+            st.plotly_chart(fig_hm, use_container_width=True)
 
-                    st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">ALL RESULTS</div>', unsafe_allow_html=True)
 
-                    display = results.drop(columns=["Top Signal", "Heatmap_Size"], errors="ignore")
-                    
-                    st.dataframe(
-                        display, 
-                        column_config={
-                            "YF Link": st.column_config.LinkColumn("Yahoo Finance", display_text="Open YF ↗"),
-                            "Verdict": st.column_config.TextColumn("Verdict")
-                        },
-                        use_container_width=True, height=480
-                    )
+            display = results.drop(columns=["Top Signal", "Heatmap_Size"], errors="ignore")
+            
+            st.dataframe(
+                display, 
+                column_config={
+                    "YF Link": st.column_config.LinkColumn("Yahoo Finance", display_text="Open YF ↗"),
+                    "Verdict": st.column_config.TextColumn("Verdict")
+                },
+                use_container_width=True, height=480
+            )
 
     # ════════════════════════════════════════════════════════
     # Tab 3 — Backtest
@@ -1784,7 +1857,6 @@ def main():
             )
             if theme_choice != st.session_state["theme"]:
                 st.session_state["theme"] = theme_choice
-                sync_settings()
                 st.rerun()
 
             all_fonts = list(_FONT_CSS.keys())
@@ -1795,7 +1867,6 @@ def main():
             )
             if font_choice != st.session_state["font"]:
                 st.session_state["font"] = font_choice
-                sync_settings()
                 st.rerun()
 
             st.markdown("#### Layout & Workflow Customization")
@@ -1814,7 +1885,6 @@ def main():
             )
             if scan_list_choice != st.session_state["scan_list"]:
                 st.session_state["scan_list"] = scan_list_choice
-                sync_settings()
                 st.rerun()
 
             if st.session_state["scan_list"] == "Custom List":
@@ -1856,18 +1926,6 @@ def main():
                 br_on = st.checkbox("Browser pop-up notifications", value=st.session_state.get("alert_browser",False),
                     help="Browser notification when a Strong Buy signal fires.")
                 st.session_state["alert_browser"] = br_on
-                if br_on:
-                    components.html("""
-                    <div style="margin-top:4px">
-                      <button onclick="Notification.requestPermission().then(p=>{
-                        document.getElementById('ns').textContent=p==='granted'?'✓ Enabled':'✗ Blocked — allow in browser settings';
-                        document.getElementById('ns').style.color=p==='granted'?'#34d399':'#f87171';
-                      });" style="background:#2962ff;color:#fff;border:none;border-radius:6px;
-                                   padding:8px 18px;cursor:pointer;font-size:0.8rem;">
-                        Allow Notifications
-                      </button>
-                      <span id="ns" style="margin-left:10px;font-size:0.8rem;color:#787b86;"></span>
-                    </div>""", height=44)
 
                 email_on = st.checkbox("Email alerts (Gmail)", value=st.session_state.get("alert_email",False),
                     help="Email alert on Strong Buy detection. Requires a Gmail App Password.")
@@ -1890,6 +1948,16 @@ def main():
                         else:
                             st.warning("Fill in all three email fields first.")
 
+    # Show any pending browser notifications generated during the run
+    if "pending_browser_notif" in st.session_state:
+        notif = st.session_state.pop("pending_browser_notif")
+        push_browser_notification(notif["title"], notif["body"])
+
+    # ── Final Persistence Trigger ──
+    # Track states down here so ANY update across the app triggers a silent local save.
+    st.session_state.save_counter = st.session_state.get("save_counter", 0) + 1
+    data_to_save = {k: st.session_state[k] for k in PERSISTENT_KEYS if k in st.session_state}
+    ls_sync(action="save", ls_key="trading_term_v5", data=data_to_save, counter=st.session_state.save_counter, key="ls_saver")
 
 if __name__ == "__main__":
     main()
