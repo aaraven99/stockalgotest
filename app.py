@@ -384,6 +384,8 @@ def build_subchart(df: pd.DataFrame, type_: str) -> go.Figure:
 # ============================================================
 # Application UI
 # ============================================================
+_PCFG = {"scrollZoom": True, "displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
+
 def main():
     init_settings()
 
