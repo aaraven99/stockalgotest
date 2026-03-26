@@ -443,7 +443,8 @@ def check_auto_scan(universe: List[str]):
         return
     st.session_state["last_auto_scan"] = now
     
-    with st.spinner("Auto-scan running…"):
+    with st.spinner(f"Auto-scan running on all {len(universe)} stocks…"):
+        # FIX: Use len(universe) instead of 80 to scan the entire selected list
         results = scan_universe(tuple(universe), len(universe), auto_tune=False)
         
     if results.empty:
@@ -451,30 +452,45 @@ def check_auto_scan(universe: List[str]):
         
     buys = results[results["Verdict"] == "STRONG BUY"]
     top5 = buys.head(5) if len(buys) >= 1 else results.head(5)
+    
+    if top5.empty:
+        return
+        
     top = top5.iloc[0]
     
     st.session_state["auto_top_ticker"] = top["Ticker"]
     st.session_state["auto_top_score"]  = top["Score"]
     
     # Feature: Email Format with top 5 picks
-    title = f"Trading Alert — {len(top5)} Top Picks Detected"
+    title = f"Trading Alert — Top Picks Detected"
     
     body = f"Trading Terminal Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
-    body += "Your Top Picks:\n"
+    body += "Your Top 5 Picks:\n\n"
     for _, row in top5.iterrows():
-        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f}\n"
+        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f} | RS vs SPY: {row['RS vs SPY']}%\n"
+        
+    body += f"\nOpen the Trading Terminal to view charts and strategy levels for {top['Ticker']}."
 
     if st.session_state.get("alert_browser"):
         push_browser_notification(title, f"{top['Ticker']} is the top pick with score {top['Score']}/100")
         
-    if st.session_state.get("alert_email") and st.session_state.get("alert_email_addr"):
-        send_email_alert(
-            st.session_state["alert_email_addr"],
-            st.session_state.get("smtp_user", ""),
-            st.session_state.get("smtp_pass", ""),
-            title, body,
-        )
+    # Email handling with feedback
+    email_enabled = st.session_state.get("alert_email", False)
+    email_addr = st.session_state.get("alert_email_addr", "").strip()
+    smtp_u = st.session_state.get("smtp_user", "").strip()
+    smtp_p = st.session_state.get("smtp_pass", "").strip()
 
+    if email_enabled:
+        if email_addr and smtp_u and smtp_p:
+            success = send_email_alert(email_addr, smtp_u, smtp_p, title, body)
+            if success:
+                st.toast(f"✅ Auto-scan email successfully sent to {email_addr}!")
+            else:
+                st.toast("⚠️ Auto-scan email failed. Check your App Password and SMTP details.", icon="⚠️")
+        else:
+            st.toast("⚠️ Auto-scan finished, but email wasn't sent because your email credentials are incomplete.", icon="⚠️")
+    else:
+        st.toast("✅ Auto-scan completed!", icon="✅")
 
 @st.cache_data(ttl=60 * 60)
 def fetch_ohlcv(ticker: str, period: str = "5y") -> pd.DataFrame:
