@@ -175,6 +175,17 @@ st.markdown("""
       opacity: 1.0;
   }
 
+  /* ── News Card ── */
+  .news-card {
+    background-color: #1e222d; border: 1px solid #2a2e39;
+    border-radius: 8px; padding: 15px; margin-bottom: 12px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .news-card:hover {
+    border-color: #2962ff;
+    transform: translateY(-2px);
+  }
+
   /* ── Buttons ── */
   .stButton > button {
     background-color: #2962ff !important; color: #fff !important;
@@ -285,6 +296,7 @@ DOW30 = sorted([
     "MSFT","NKE","PG","TRV","UNH","V","VZ","WBA","WMT","INTC",
 ])
 
+# Major ETFs & Funds
 ETFS_FUNDS = sorted([
     "SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "ARKK", "GLD", "SLV", "USO", 
     "UNG", "TLT", "TMF", "XLF", "XLK", "XLE", "XLU", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE"
@@ -408,6 +420,7 @@ def inject_theme(theme: str, font: str):
     c = _THEMES.get(theme, _THEMES["Dark"])
     font_import, ff = _FONT_CSS.get(font, _FONT_CSS["JetBrains Mono"])
     
+    # SAFE FONT OVERRIDE logic: strictly apply fonts to our text, avoid polluting Material Symbols
     st.markdown(f"""<style>
     {font_import}
     .stApp {{background-color:{c['bg']} !important;}}
@@ -564,7 +577,8 @@ def fetch_ohlcv(ticker: str, period: str = "5y") -> pd.DataFrame:
 def fetch_market_news(ticker: str = "SPY") -> List[dict]:
     try:
         t = yf.Ticker(ticker)
-        return t.news[:10]
+        # Fetching top 15 to give more of a proper feed vibe
+        return t.news[:15]
     except Exception:
         return []
 
@@ -1406,9 +1420,10 @@ def main():
                             cls_map  = {"STRONG BUY":"verdict-buy","STRONG SELL":"verdict-sell","NEUTRAL":"verdict-neutral"}
                             icon_map = {"STRONG BUY":"▲","STRONG SELL":"▼","NEUTRAL":"◆"}
                             
+                            yf_link = f"https://finance.yahoo.com/quote/{t}"
                             st.markdown(
                                 f'<div class="verdict-card {cls_map.get(verdict,"verdict-neutral")}">'
-                                f'{icon_map.get(verdict,"")} &nbsp; {t} &nbsp;·&nbsp; {verdict} &nbsp;·&nbsp; Score {last_score:.0f} / 100'
+                                f'{icon_map.get(verdict,"")} &nbsp; <a href="{yf_link}" target="_blank" style="color: inherit; text-decoration: none; border-bottom: 1px dashed;" title="Open in Yahoo Finance">{t} ↗</a> &nbsp;·&nbsp; {verdict} &nbsp;·&nbsp; Score {last_score:.0f} / 100'
                                 f'</div>',
                                 unsafe_allow_html=True,
                             )
@@ -1627,7 +1642,7 @@ def main():
                     <div style="background:{tc['card']};border:1px solid {tc['border']};border-radius:10px;
                                 padding:18px 22px;margin-bottom:18px">
                       <div style="font-size:0.7rem;letter-spacing:0.1em;color:{tc['sub']};margin-bottom:8px">
-                        ${start_cap:,.0f} STARTING CAPITAL · {bt_ticker} · {bt_period.upper()}
+                        ${start_cap:,.0f} STARTING CAPITAL · <a href="https://finance.yahoo.com/quote/{bt_ticker}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed;" title="Open in Yahoo Finance">{bt_ticker} ↗</a> · {bt_period.upper()}
                       </div>
                       <div style="display:flex;gap:40px;align-items:center">
                         <div>
@@ -1811,32 +1826,54 @@ def main():
     # ════════════════════════════════════════════════════════
     with tab_news:
         st.markdown("### 📰 Market News & Alerts")
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.markdown("#### Latest General Market News")
-            news_items = fetch_market_news("SPY")
+        n_col1, n_col2 = st.columns([3, 1], gap="large")
+
+        with n_col1:
+            news_ticker = st.text_input("Search news by ticker symbol:", "SPY", help="Enter a stock ticker to fetch its latest news.").strip().upper()
+            st.markdown(f"#### Latest Headlines for {news_ticker}")
+            news_items = fetch_market_news(news_ticker)
+
             if news_items:
                 for item in news_items:
                     pub_time = item.get("providerPublishTime", time.time())
                     dt_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d %H:%M")
                     
-                    # Clean markdown links replacing custom HTML to prevent CSS/stacking bugs
-                    st.markdown(f"#### [{item.get('title', 'Headline')}]({item.get('link', '#')})")
+                    # Use pure HTML to guarantee it opens in a new tab securely and avoids Markdown rendering bugs
+                    link = item.get('link', '#')
+                    title = item.get('title', 'Headline')
+                    st.markdown(f'<h4><a href="{link}" target="_blank" style="color: #2962ff; text-decoration: none;">{title}</a></h4>', unsafe_allow_html=True)
                     st.caption(f"Published by **{item.get('publisher', 'Yahoo Finance')}** • {dt_str}")
                     st.divider()
             else:
                 st.info("No news fetched. Check connection.")
+
+                    img_html = f'<img src="{img_url}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0;">' if img_url else f'<div style="width: 100px; height: 100px; background: #2a2e39; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #787b86; font-size: 2rem;">📰</div>'
+
+                    st.markdown(f"""
+                    <a href="{item.get('link', '#')}" target="_blank" style="text-decoration:none;">
+                        <div class="news-card" style="display: flex; gap: 15px; align-items: center;">
+                            {img_html}
+                            <div style="flex-grow: 1;">
+                                <div class="news-title" style="font-size: 1.1rem; line-height: 1.3; margin-bottom: 8px;">{item.get('title', 'Headline')}</div>
+                                <div class="news-meta">{item.get('publisher', 'Yahoo Finance')} • {dt_str}</div>
+                            </div>
+                        </div>
+                    </a>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info(f"No news fetched for {news_ticker}. Check connection or try another ticker.")
                 
-        with c2:
-            st.markdown("#### Global Indices")
+        with n_col2:
+            st.markdown("#### Global Indices Snapshot")
             with st.spinner("Fetching..."):
                 try:
-                    majors = yf.download("SPY QQQ DIA IWM", period="5d", progress=False)["Close"]
-                    for c in ["SPY", "QQQ", "DIA", "IWM"]:
+                    majors = yf.download("SPY QQQ DIA IWM BTC-USD", period="5d", progress=False)["Close"]
+                    for c in ["SPY", "QQQ", "DIA", "IWM", "BTC-USD"]:
                         if c in majors.columns:
                             val = majors[c].iloc[-1]
                             chg = (val / majors[c].iloc[-2] - 1) * 100
-                            st.metric(f"{c} ETF", f"${val:.2f}", f"{chg:+.2f}%")
+                            name = "Bitcoin" if c == "BTC-USD" else c
+                            st.metric(name, f"${val:,.2f}", f"{chg:+.2f}%")
                 except:
                     st.caption("Unable to fetch indices.")
 
@@ -1857,6 +1894,7 @@ def main():
             )
             if theme_choice != st.session_state["theme"]:
                 st.session_state["theme"] = theme_choice
+                sync_settings()
                 st.rerun()
 
             all_fonts = list(_FONT_CSS.keys())
@@ -1867,6 +1905,7 @@ def main():
             )
             if font_choice != st.session_state["font"]:
                 st.session_state["font"] = font_choice
+                sync_settings()
                 st.rerun()
 
             st.markdown("#### Layout & Workflow Customization")
@@ -1885,6 +1924,7 @@ def main():
             )
             if scan_list_choice != st.session_state["scan_list"]:
                 st.session_state["scan_list"] = scan_list_choice
+                sync_settings()
                 st.rerun()
 
             if st.session_state["scan_list"] == "Custom List":
@@ -1926,6 +1966,18 @@ def main():
                 br_on = st.checkbox("Browser pop-up notifications", value=st.session_state.get("alert_browser",False),
                     help="Browser notification when a Strong Buy signal fires.")
                 st.session_state["alert_browser"] = br_on
+                if br_on:
+                    components.html("""
+                    <div style="margin-top:4px">
+                      <button onclick="Notification.requestPermission().then(p=>{
+                        document.getElementById('ns').textContent=p==='granted'?'✓ Enabled':'✗ Blocked — allow in browser settings';
+                        document.getElementById('ns').style.color=p==='granted'?'#34d399':'#f87171';
+                      });" style="background:#2962ff;color:#fff;border:none;border-radius:6px;
+                                   padding:8px 18px;cursor:pointer;font-size:0.8rem;">
+                        Allow Notifications
+                      </button>
+                      <span id="ns" style="margin-left:10px;font-size:0.8rem;color:#787b86;"></span>
+                    </div>""", height=44)
 
                 email_on = st.checkbox("Email alerts (Gmail)", value=st.session_state.get("alert_email",False),
                     help="Email alert on Strong Buy detection. Requires a Gmail App Password.")
