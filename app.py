@@ -1462,11 +1462,15 @@ def main():
                                     st.markdown(f'<div class="reason-box"><span style="color:#3b82f6;font-weight:700">{i}.</span> {r}</div>', unsafe_allow_html=True)
 
                             if st.session_state.get("layout_show_levels", True):
-                                pct_stop = abs(rl["entry"] - rl["stop"]) / rl["entry"] * 100
-                                pct_pt1  = (rl["pt1"] - rl["entry"]) / rl["entry"] * 100
-                                pct_pt2  = (rl["pt2"] - rl["entry"]) / rl["entry"] * 100
-                                pct_pt3  = (rl["pt3"] - rl["entry"]) / rl["entry"] * 100
-                                rr1 = pct_pt1 / pct_stop if pct_stop else 0
+                                entry_p = rl.get("entry", 1.0)
+                                if entry_p == 0: entry_p = 1.0
+                                
+                                pct_stop = abs(rl["entry"] - rl["stop"]) / entry_p * 100
+                                pct_pt1  = (rl["pt1"] - rl["entry"]) / entry_p * 100
+                                pct_pt2  = (rl["pt2"] - rl["entry"]) / entry_p * 100
+                                pct_pt3  = (rl["pt3"] - rl["entry"]) / entry_p * 100
+                                rr1 = pct_pt1 / pct_stop if pct_stop > 0 else 0
+                                
                                 st.markdown(f'<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 4px 0">TRADE LEVELS &nbsp;<span style="color:#4b5563;font-size:0.6rem">ATR ${rl["atr"]:.2f} · R:R to T1 = {rr1:.1f}x</span></div>', unsafe_allow_html=True)
                                 st.markdown(f"""
                                 <div class="risk-card">
@@ -1479,7 +1483,7 @@ def main():
                                   <div class="risk-row"><span class="risk-label">🎯 Target 2</span>
                                     <span class="risk-pt2">${rl['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt2:.1f}%)</span></span></div>
                                   <div class="risk-row"><span class="risk-label">🎯 Target 3</span>
-                                    <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_3:.1f}%)</span></span></div>
+                                    <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt3:.1f}%)</span></span></div>
                                 </div>""", unsafe_allow_html=True)
 
                             st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
@@ -1652,14 +1656,14 @@ def main():
                 help="How far back to test. Longer windows give more trades and more reliable stats.",
             )
 
-            # Safely typed explicit int inputs
-            start_cap_val = int(st.session_state.get("starting_capital", 5000.0))
+            # Safely typed explicit float inputs
+            start_cap_val = float(st.session_state.get("starting_capital", 5000.0))
             start_cap_input = st.number_input(
                 "Starting capital ($)", 
-                min_value=100, 
-                max_value=1000000,
+                min_value=100.0, 
+                max_value=1000000.0,
                 value=start_cap_val,
-                step=100, 
+                step=100.0, 
                 help="How much money you would have started with. The backtest shows how it grows or shrinks.",
             )
             st.session_state["starting_capital"] = float(start_cap_input)
@@ -1738,11 +1742,15 @@ def main():
                         st.plotly_chart(build_pnl_scatter(df_bt, sig_bt), use_container_width=True, config=_PCFG)
 
                     if st.session_state.get("layout_show_levels", True):
-                        # Trade levels
-                        pct_s = abs(rl_bt["entry"]-rl_bt["stop"])/rl_bt["entry"]*100
-                        pct_1 = (rl_bt["pt1"]-rl_bt["entry"])/rl_bt["entry"]*100
-                        pct_2 = (rl_bt["pt2"]-rl_bt["entry"])/rl_bt["entry"]*100
-                        pct_3 = (rl_bt["pt3"]-rl_bt["entry"])/rl_bt["entry"]*100
+                        entry_p = rl_bt.get("entry", 1.0)
+                        if entry_p == 0: entry_p = 1.0
+                        
+                        # Trade levels calculation safe from ZeroDivision
+                        pct_s = abs(rl_bt["entry"]-rl_bt["stop"]) / entry_p * 100
+                        pct_1 = (rl_bt["pt1"]-rl_bt["entry"]) / entry_p * 100
+                        pct_2 = (rl_bt["pt2"]-rl_bt["entry"]) / entry_p * 100
+                        pct_3 = (rl_bt["pt3"]-rl_bt["entry"]) / entry_p * 100
+                        
                         st.markdown(f"""
                         <div class="risk-card" style="margin:14px 0 18px 0">
                           <div style="font-size:0.65rem;color:#4b5563;margin-bottom:8px">Current levels · ATR ${rl_bt['atr']:.2f} · params auto-tuned for {bt_ticker}</div>
@@ -1803,17 +1811,17 @@ def main():
             
             trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers, key="paper_trade_ticker") if st.session_state.active_tickers else None
             
-            # Safely typed explicit int inputs
-            paper_cash_val = int(st.session_state.get("paper_cash", 5000.0))
-            safe_max = max(10, paper_cash_val)
-            safe_val = min(500, safe_max)
+            # Safely typed explicit float inputs
+            paper_cash_val = float(st.session_state.get("paper_cash", 5000.0))
+            safe_max = float(max(10.0, paper_cash_val))
+            safe_val = float(min(500.0, safe_max))
             
             trade_amt_input = st.number_input(
                 "Amount to Risk ($)", 
-                min_value=10, 
+                min_value=10.0, 
                 max_value=safe_max, 
                 value=safe_val, 
-                step=100,
+                step=100.0,
                 key="paper_trade_amt"
             )
             trade_amt = float(trade_amt_input)
@@ -1827,6 +1835,7 @@ def main():
                     if st.session_state.paper_cash >= trade_amt:
                         st.session_state.paper_cash -= trade_amt
                         if trade_ticker in st.session_state.paper_portfolio:
+                            # Average price calculation
                             old_shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
                             old_avg = st.session_state.paper_portfolio[trade_ticker]["avg_price"]
                             new_avg = ((old_shares * old_avg) + trade_amt) / (old_shares + shares)
@@ -1857,7 +1866,7 @@ def main():
 
             st.markdown("---")
             st.markdown("### 📐 Risk Manager")
-            acct_size_input = st.number_input("Total Account Size ($)", value=int(st.session_state.paper_cash), step=500, key="paper_acct_size")
+            acct_size_input = st.number_input("Total Account Size ($)", value=float(st.session_state.paper_cash), step=500.0, key="paper_acct_size")
             acct_size = float(acct_size_input)
             
             risk_pct = st.slider("Risk Limit % per Trade", 0.5, 5.0, 1.0, 0.1, key="paper_risk_pct")
