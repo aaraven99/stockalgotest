@@ -586,6 +586,7 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
     pb.empty()
     return pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
 
+_PCFG = {"scrollZoom": True, "displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
 def _run_analysis(t: str):
     raw = fetch_ohlcv(t, "5y")
