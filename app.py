@@ -1017,8 +1017,8 @@ def main():
             if c_b.button("BUY", type="primary", use_container_width=True) and pt_t:
                 raw = fetch_ohlcv(pt_t, "1mo")
                 if not raw.empty:
-                    curr_price = float(raw["Close"].iloc[-1])
-                    sh = float(pt_amt) / curr_price
+                    curr_px = float(raw["Close"].iloc[-1])
+                    sh = float(pt_amt) / curr_px
                     if pc_val >= float(pt_amt):
                         st.session_state["paper_cash"] = pc_val - float(pt_amt)
                         port = st.session_state["paper_portfolio"]
@@ -1026,8 +1026,8 @@ def main():
                             o_sh = port[pt_t]["shares"]; o_px = port[pt_t]["avg_price"]
                             port[pt_t]["avg_price"] = ((o_sh * o_px) + float(pt_amt)) / (o_sh + sh)
                             port[pt_t]["shares"] += sh
-                        else: port[pt_t] = {"shares": sh, "avg_price": curr_price}
-                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "BUY", "Ticker": pt_t, "Price": curr_price, "Shares": sh})
+                        else: port[pt_t] = {"shares": sh, "avg_price": curr_px}
+                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "BUY", "Ticker": pt_t, "Price": curr_px, "Shares": sh})
                         st.success("Bought!")
                         st.rerun()
             
@@ -1036,12 +1036,12 @@ def main():
                 if pt_t in port:
                     raw = fetch_ohlcv(pt_t, "1mo")
                     if not raw.empty:
-                        curr_price = float(raw["Close"].iloc[-1])
+                        curr_px = float(raw["Close"].iloc[-1])
                         sh = port[pt_t]["shares"]
-                        val = sh * curr_price
+                        val = sh * curr_px
                         st.session_state["paper_cash"] += val
                         del port[pt_t]
-                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "SELL", "Ticker": pt_t, "Price": curr_price, "Shares": sh})
+                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "SELL", "Ticker": pt_t, "Price": curr_px, "Shares": sh})
                         st.success("Sold!")
                         st.rerun()
 
@@ -1060,9 +1060,9 @@ def main():
                 rows = []
                 for k, v in st.session_state["paper_portfolio"].items():
                     raw = fetch_ohlcv(k, "1mo")
-                    curr_price = float(raw["Close"].iloc[-1]) if not raw.empty else v["avg_price"]
-                    pnl = (curr_price / v["avg_price"] - 1) * 100
-                    rows.append({"Ticker": k, "Shares": round(v["shares"],4), "Entry": f"${v['avg_price']:.2f}", "Current": f"${curr_price:.2f}", "Value": f"${v['shares']*curr_price:.2f}", "PnL": f"{pnl:+.2f}%"})
+                    curr_px = float(raw["Close"].iloc[-1]) if not raw.empty else v["avg_price"]
+                    pnl = (curr_px / v["avg_price"] - 1) * 100
+                    rows.append({"Ticker": k, "Shares": round(v["shares"],4), "Entry": f"${v['avg_price']:.2f}", "Current": f"${curr_px:.2f}", "Value": f"${v['shares']*curr_px:.2f}", "PnL": f"{pnl:+.2f}%"})
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             else: st.caption("No open positions.")
             
