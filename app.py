@@ -337,9 +337,9 @@ def get_universe(mode: str) -> List[str]:
         parsed = [t.strip().upper() for t in raw.replace(","," ").split() if t.strip()]
         return parsed if parsed else fetch_universe()
     if mode == "S&P 500":
-        return fetch_sp500_only()
+        return fetch_sp500_only() or fetch_universe()
     elif mode == "Nasdaq-100":
-        return fetch_ndx100_only()
+        return fetch_ndx100_only() or fetch_universe()
     elif mode == "Dow Jones 30":
         return DOW30
     elif mode == "Major ETFs & Funds":
@@ -514,9 +514,9 @@ def push_browser_notification(title: str, body: str):
 def check_auto_scan(universe: List[str]):
     if not st.session_state.get("auto_scan", False):
         return
-    interval = st.session_state.get("scan_interval", 15) * 60
+    interval = int(st.session_state.get("scan_interval", 15)) * 60
     now = time.time()
-    last = st.session_state.get("last_auto_scan", 0.0)
+    last = float(st.session_state.get("last_auto_scan", 0.0))
     
     if now - last < interval:
         return
@@ -1472,7 +1472,7 @@ def main():
                                   <div class="risk-row"><span class="risk-label">🎯 Target 2</span>
                                     <span class="risk-pt2">${rl['pt2']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt2:.1f}%)</span></span></div>
                                   <div class="risk-row"><span class="risk-label">🎯 Target 3</span>
-                                    <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_pt3:.1f}%)</span></span></div>
+                                    <span class="risk-pt3">${rl['pt3']:.2f} <span style="color:#6b7280;font-size:0.78rem">(+{pct_3:.1f}%)</span></span></div>
                                 </div>""", unsafe_allow_html=True)
 
                             st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
@@ -1555,7 +1555,7 @@ def main():
             )
             auto_tune = st.checkbox("Auto-Tune Indicators per stock", value=True, help="Runs optimization per-stock to find best params perfectly guided for it.")
         with sc3:
-            st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="margin-top:28px"></div>', unsafe_allow_html=True)
             scan_btn = st.button("SCAN NOW", type="primary", use_container_width=True,
                                  help="Scan stocks and rank by conviction score.")
 
@@ -1646,9 +1646,12 @@ def main():
             )
 
             start_cap = st.number_input(
-                "Starting capital ($)", min_value=100.0, max_value=1_000_000.0,
-                value=st.session_state.get("starting_capital", 5000.0),
-                step=100.0, format="%.2f",
+                "Starting capital ($)", 
+                min_value=100.0, 
+                max_value=1_000_000.0,
+                value=float(st.session_state.get("starting_capital", 5000.0)),
+                step=100.0, 
+                format="%.2f",
                 help="How much money you would have started with. The backtest shows how it grows or shrinks.",
             )
             st.session_state["starting_capital"] = start_cap
@@ -1790,13 +1793,24 @@ def main():
             st.metric("Virtual Balance", f"${st.session_state.paper_cash:,.2f}")
             
             trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers) if st.session_state.active_tickers else None
-            trade_amt = st.number_input("Amount to Risk ($)", min_value=10.0, max_value=max(10.0, st.session_state.paper_cash), value=min(500.0, max(10.0, st.session_state.paper_cash)), step=100.0)
+            
+            paper_cash_val = float(st.session_state.paper_cash)
+            safe_max = max(10.0, paper_cash_val)
+            safe_val = min(500.0, safe_max)
+            trade_amt = st.number_input(
+                "Amount to Risk ($)", 
+                min_value=10.0, 
+                max_value=float(safe_max), 
+                value=float(safe_val), 
+                step=100.0, 
+                format="%.2f"
+            )
             
             tc1, tc2 = st.columns(2)
             if tc1.button("BUY", use_container_width=True, type="primary") and trade_ticker:
                 raw = fetch_ohlcv(trade_ticker, "1mo")
                 if not raw.empty:
-                    px_cur = raw["Close"].iloc[-1]
+                    px_cur = float(raw["Close"].iloc[-1])
                     shares = trade_amt / px_cur
                     if st.session_state.paper_cash >= trade_amt:
                         st.session_state.paper_cash -= trade_amt
@@ -1819,7 +1833,7 @@ def main():
                 if trade_ticker in st.session_state.paper_portfolio:
                     raw = fetch_ohlcv(trade_ticker, "1mo")
                     if not raw.empty:
-                        px_cur = raw["Close"].iloc[-1]
+                        px_cur = float(raw["Close"].iloc[-1])
                         shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
                         value = shares * px_cur
                         st.session_state.paper_cash += value
@@ -1832,9 +1846,9 @@ def main():
 
             st.markdown("---")
             st.markdown("### 📐 Risk Manager")
-            acct_size = st.number_input("Total Account Size ($)", value=st.session_state.paper_cash, step=500.0)
+            acct_size = st.number_input("Total Account Size ($)", value=float(st.session_state.paper_cash), step=500.0, format="%.2f")
             risk_pct = st.slider("Risk Limit % per Trade", 0.5, 5.0, 1.0, 0.1)
-            stop_loss_pct = st.number_input("Expected Stop Loss %", value=5.0, step=0.5)
+            stop_loss_pct = st.number_input("Expected Stop Loss %", value=5.0, step=0.5, format="%.1f")
             
             risk_amt = (acct_size * risk_pct) / 100
             max_pos_size = risk_amt / (stop_loss_pct / 100) if stop_loss_pct > 0 else 0
@@ -1847,7 +1861,7 @@ def main():
                 port_rows = []
                 for k, v in st.session_state.paper_portfolio.items():
                     raw = fetch_ohlcv(k, "1mo")
-                    current_px = raw["Close"].iloc[-1] if not raw.empty else v['avg_price']
+                    current_px = float(raw["Close"].iloc[-1]) if not raw.empty else float(v['avg_price'])
                     pnl_pct = ((current_px / v['avg_price']) - 1) * 100
                     port_rows.append({
                         "Ticker": k,
@@ -1998,7 +2012,7 @@ def main():
                 interval = st.select_slider(
                     "Scan every",
                     options=[5,10,15,30,60],
-                    value=st.session_state.get("scan_interval",15),
+                    value=int(st.session_state.get("scan_interval",15)),
                     format_func=lambda x: f"{x} min",
                     help="How often to auto-scan. Browser tab must stay open.",
                 )
