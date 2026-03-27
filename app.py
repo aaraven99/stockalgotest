@@ -480,9 +480,9 @@ def conviction_score(df: pd.DataFrame) -> Tuple[pd.Series, List[str]]:
     score += np.where(df["Close"] > df["AVWAP"], 8, -8)
     score += np.where(df["OBV"] > df["OBV"].rolling(10).mean(), 4, -4)
     score += np.where(df["CMF"] > 0, 4, -4)
-    score += np.where(df["MFI"] > 50, 3, -3)
+    score += np.where(df.get("MFI", pd.Series(50, index=df.index)) > 50, 3, -3)
     score += np.where((df["Close"] > df["EMA20"]) & (df["EMA20"] > df["EMA50"]), 8, -8)
-    score += np.where(df["ADX"] > 22, 5, -2)
+    score += np.where(df.get("ADX", pd.Series(20, index=df.index)) > 22, 5, -2)
     score += np.where(df["Close"] > np.maximum(df["SENKOU_A"], df["SENKOU_B"]), 5, -5)
     score += np.where(df["Close"] > df["SUPER"], 5, -5)
     score += np.where((df["RSI"] > 50) & (df["RSI"] < 72), 6, -6)
@@ -501,7 +501,7 @@ def conviction_score(df: pd.DataFrame) -> Tuple[pd.Series, List[str]]:
     if last["Close"] > last["AVWAP"]: reasons.append("Price is holding above recent Major Swing Low Anchored VWAP.")
     if last["EMA20"] > last["EMA50"]: reasons.append("Short-term EMA crossed above Mid-term EMA (Bullish trend).")
     if last["MACD_HIST"] > 0: reasons.append("MACD Histogram is positive (Momentum expanding).")
-    if last["ADX"] > 22: reasons.append("ADX confirms a strong, sustained directional trend.")
+    if last.get("ADX", 0) > 22: reasons.append("ADX confirms a strong, sustained directional trend.")
     if last["Close"] > last["SUPER"]: reasons.append("Price cleared SuperTrend resistance.")
     if not reasons: reasons.append("Consolidating market conditions without extreme momentum.")
     return score, reasons[:3]
@@ -695,13 +695,12 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
                 "Ticker": t, "Price": round(last_c, 2), "1D Chg%": round(chg_1d, 2),
                 "6M Chg%": round(chg_6m, 2), "RS vs SPY": round(chg_6m - spy_ret, 2),
                 "Score": round(float(sc.iloc[-1]), 1), "RSI": round(float(df["RSI"].iloc[-1]), 1),
-                "Stop Loss": round(last_c - 2 * last_atr, 2), "Target": round(last_c + 2 * last_atr, 2),
+                "Stop Loss": round(last_c - 2 * last_atr, 2), "Goal Price": round(last_c + 2 * last_atr, 2),
                 "Verdict": verdict_from_score(float(sc.iloc[-1]))
             })
         except: continue
     pb.empty()
     return pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
-
 
 def _run_analysis(t: str):
     raw = fetch_ohlcv(t, "5y")
@@ -768,26 +767,31 @@ def main():
                     title = f"🚨 WATCHLIST ALERT: {len(wl_hits)} Buy Signals!"
                     body += "🎯 YOUR WATCHLIST BUY SIGNALS:\n"
                     for _, row in wl_hits.iterrows():
-                        body += f"• {row['Ticker']}: STRONG BUY (Score {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop: ${row['Stop Loss']:.2f} | Target: ${row['Target']:.2f}\n"
+                        body += f"• {row['Ticker']}: STRONG BUY (Score {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop Loss: ${row['Stop Loss']:.2f} | Goal Price: ${row['Goal Price']:.2f}\n"
                     body += "\n"
                 
                 if not top5.empty:
-                    body += "🔥 Top Scanner Picks:\n"
+                    body += "🔥 Top 5 Scanner Picks:\n"
                     for _, row in top5.iterrows(): 
-                        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f}\n"
+                        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop Loss: ${row['Stop Loss']:.2f} | Goal Price: ${row['Goal Price']:.2f}\n"
                     if not alert_triggered:
-                        title = f"Trading Alert — Top {len(top5)} Picks Detected"
+                        title = f"Trading Alert — Top 5 Picks Detected"
                         alert_triggered = True
 
                 if alert_triggered:
                     notif_ticker = wl_hits.iloc[0]['Ticker'] if not wl_hits.empty else top5.iloc[0]['Ticker']
                     if st.session_state.get("alert_browser"):
                         st.session_state["pending_browser_notif"] = {"title": title, "body": f"Check terminal for {notif_ticker} and others!"}
-                    if st.session_state.get("alert_email") and st.session_state.get("alert_email_addr"):
-                        if send_email_alert(st.session_state["alert_email_addr"], st.session_state.get("smtp_user", ""), st.session_state.get("smtp_pass", ""), title, body):
-                            st.toast("✅ Auto-scan alert email sent!")
-                        else: st.toast("⚠️ Auto-scan email failed. Check App Password.", icon="⚠️")
-                    else: st.toast("✅ Auto-scan completed!", icon="✅")
+                    
+                    if st.session_state.get("alert_email"):
+                        if st.session_state.get("alert_email_addr") and st.session_state.get("smtp_user") and st.session_state.get("smtp_pass"):
+                            if send_email_alert(st.session_state["alert_email_addr"], st.session_state.get("smtp_user", ""), st.session_state.get("smtp_pass", ""), title, body):
+                                st.toast("✅ Auto-scan alert email sent with Top 5 Picks!")
+                            else: st.toast("⚠️ Auto-scan email failed. Check App Password.", icon="⚠️")
+                        else:
+                            st.toast("⚠️ Auto-scan complete, but email failed (Missing credentials in Settings).", icon="⚠️")
+                    else: 
+                        st.toast("✅ Auto-scan completed!", icon="✅")
 
     with st.sidebar:
         st.markdown("### 👀 Alert Watchlist")
@@ -878,10 +882,10 @@ def main():
                                 st.markdown(f"""
                                 <div class="risk-card">
                                   <div class="risk-row"><span class="risk-label">Entry</span><b>${rl['entry']:.2f}</b></div>
-                                  <div class="risk-row"><span class="risk-label">🛑 Stop</span><span class="risk-stop">${rl['stop']:.2f} <span style="font-size:0.75rem">(-{pct_s:.1f}%)</span></span></div>
-                                  <div class="risk-row"><span class="risk-label">🎯 Target 1</span><span class="risk-pt1">${rl['pt1']:.2f} <span style="font-size:0.75rem">(+{pct_1:.1f}%)</span></span></div>
-                                  <div class="risk-row"><span class="risk-label">🎯 Target 2</span><span class="risk-pt2">${rl['pt2']:.2f} <span style="font-size:0.75rem">(+{pct_2:.1f}%)</span></span></div>
-                                  <div class="risk-row"><span class="risk-label">🎯 Target 3</span><span class="risk-pt3">${rl['pt3']:.2f} <span style="font-size:0.75rem">(+{pct_3:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🛑 Stop Loss</span><span class="risk-stop">${rl['stop']:.2f} <span style="font-size:0.75rem">(-{pct_s:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Goal 1</span><span class="risk-pt1">${rl['pt1']:.2f} <span style="font-size:0.75rem">(+{pct_1:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Goal 2</span><span class="risk-pt2">${rl['pt2']:.2f} <span style="font-size:0.75rem">(+{pct_2:.1f}%)</span></span></div>
+                                  <div class="risk-row"><span class="risk-label">🎯 Goal 3</span><span class="risk-pt3">${rl['pt3']:.2f} <span style="font-size:0.75rem">(+{pct_3:.1f}%)</span></span></div>
                                 </div>""", unsafe_allow_html=True)
 
                             st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
@@ -941,7 +945,7 @@ def main():
                   <div class="pick-ticker"><a href="{yf_link}" target="_blank">{r['Ticker']} ↗</a></div>
                   <div class="pick-score">{r['Score']}</div>
                   <div class="{c_cls}">${r['Price']:.2f} ({r['1D Chg%']:+.2f}%)</div>
-                  <div style="color:#8b949e;font-size:0.68rem;margin-top:6px">Stop ${r['Stop Loss']:.2f} · Target ${r['Target']:.2f}</div>
+                  <div style="color:#8b949e;font-size:0.68rem;margin-top:6px">Stop Loss: ${r['Stop Loss']:.2f} · Goal Price: ${r['Goal Price']:.2f}</div>
                 </div>""", unsafe_allow_html=True)
 
             st.markdown('<div style="margin:20px 0 10px 0;font-size:0.7rem;color:#8b949e;">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
@@ -1129,14 +1133,29 @@ def main():
             st.session_state["auto_scan"] = st.toggle("Enable auto-scan", st.session_state["auto_scan"])
             if st.session_state["auto_scan"]:
                 st.session_state["scan_interval"] = st.select_slider("Interval", [5,10,15,30,60], st.session_state["scan_interval"])
-                st.session_state["alert_browser"] = st.checkbox("Browser notifications", st.session_state["alert_browser"])
-                if st.session_state["alert_browser"]:
-                    components.html("<script>Notification.requestPermission();</script>", height=0)
-                st.session_state["alert_email"] = st.checkbox("Email alerts", st.session_state["alert_email"])
-                if st.session_state["alert_email"]:
-                    st.session_state["alert_email_addr"] = st.text_input("Send to", st.session_state["alert_email_addr"])
-                    st.session_state["smtp_user"] = st.text_input("Gmail", st.session_state["smtp_user"])
-                    st.session_state["smtp_pass"] = st.text_input("App Pass", st.session_state["smtp_pass"], type="password")
+                
+                # Notifications Setup & Test Buttons
+                c_test1, c_test2 = st.columns(2)
+                with c_test1:
+                    st.session_state["alert_browser"] = st.checkbox("Browser notifications", st.session_state["alert_browser"])
+                    if st.session_state["alert_browser"]:
+                        components.html("<script>Notification.requestPermission();</script>", height=0)
+                        if st.button("Test Browser Alert", use_container_width=True):
+                            st.session_state["pending_browser_notif"] = {"title": "Test Alert", "body": "Browser notifications are working perfectly!"}
+                            st.rerun()
+                
+                with c_test2:
+                    st.session_state["alert_email"] = st.checkbox("Email alerts", st.session_state["alert_email"])
+                    if st.session_state["alert_email"]:
+                        st.session_state["alert_email_addr"] = st.text_input("Send to", st.session_state["alert_email_addr"])
+                        st.session_state["smtp_user"] = st.text_input("Gmail", st.session_state["smtp_user"])
+                        st.session_state["smtp_pass"] = st.text_input("App Pass", st.session_state["smtp_pass"], type="password")
+                        if st.button("Send Test Email", use_container_width=True):
+                            if st.session_state["alert_email_addr"] and st.session_state["smtp_user"] and st.session_state["smtp_pass"]:
+                                if send_email_alert(st.session_state["alert_email_addr"], st.session_state["smtp_user"], st.session_state["smtp_pass"], "Terminal Alert Test", "Email alerts are working correctly!"):
+                                    st.success("Sent!")
+                                else: st.error("Failed — check username and App Password.")
+                            else: st.warning("Fill in all three email fields first.")
 
     if "pending_browser_notif" in st.session_state:
         n = st.session_state.pop("pending_browser_notif")
