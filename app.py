@@ -253,43 +253,6 @@ st.markdown("""
 # ============================================================
 # Data / universe helpers
 # ============================================================
-@st.cache_data(ttl=60 * 60)
-def fetch_universe() -> List[str]:
-    fallback = sorted(list(dict.fromkeys([
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "COST",
-        "AMD", "NFLX", "ADBE", "QCOM", "CSCO", "INTC", "AMGN", "TXN", "PEP", "CMCSA",
-        "TMUS", "HON", "AMAT", "INTU", "SBUX", "BKNG", "GILD", "ADP", "LRCX", "MU",
-        "PANW", "MELI", "ISRG", "VRTX", "KLAC", "SNPS", "CDNS", "CRWD", "MRVL", "ASML",
-        "JPM", "V", "MA", "BRK-B", "UNH", "XOM", "JNJ", "WMT", "PG", "LLY", "CVX", "HD",
-        "ABBV", "MRK", "KO", "BAC", "ORCL", "CRM", "MCD", "NKE", "PFE", "TMO", "ABT",
-        "DHR", "WFC", "LIN", "ACN", "DIS", "VZ", "CMG", "COP", "NEE", "PM", "LOW", "UNP",
-        "GS", "RTX", "C", "SPGI", "BLK", "CAT", "DE", "BA", "UPS", "T", "IBM", "NOW",
-        "MS", "SCHW", "PLTR", "UBER", "SHOP", "SQ", "PYPL", "RIVN", "F", "GM",
-    ])))
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TradingTerminal/2.0)"}
-
-    def _tables(url):
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-        return pd.read_html(StringIO(r.text))
-
-    try:
-        sp = _tables("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]["Symbol"].astype(str).tolist()
-        ndx_tables = _tables("https://en.wikipedia.org/wiki/Nasdaq-100")
-        ndx = []
-        for t in ndx_tables:
-            cols = [str(c).strip().lower() for c in t.columns]
-            if "ticker" in cols:
-                ndx = t[t.columns[cols.index("ticker")]].astype(str).tolist()
-                break
-        if not ndx:
-            raise ValueError("no ndx")
-        cleaned = [s.replace(".", "-").strip().upper() for s in sp + ndx if s]
-        return sorted(list(dict.fromkeys(cleaned)))
-    except Exception:
-        return fallback
-
-
 DOW30 = sorted([
     "AAPL","AMGN","AXP","BA","CAT","CRM","CSCO","CVX","DIS","DOW",
     "GS","HD","HON","IBM","JNJ","JPM","KO","MCD","MMM","MRK",
@@ -302,28 +265,71 @@ ETFS_FUNDS = sorted([
     "UNG", "TLT", "TMF", "XLF", "XLK", "XLE", "XLU", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE"
 ])
 
+# Fallback list used if web-scraping totally fails
+FALLBACK_LIST = sorted(list(dict.fromkeys(DOW30 + [
+    "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "COST",
+    "AMD", "NFLX", "ADBE", "QCOM", "AMAT", "INTU", "SBUX", "BKNG", "GILD", "ADP", "LRCX", "MU",
+    "PANW", "MELI", "ISRG", "VRTX", "KLAC", "SNPS", "CDNS", "CRWD", "MRVL", "ASML",
+    "MA", "BRK-B", "XOM", "LLY", "ABBV", "BAC", "ORCL", "PFE", "TMO", "ABT",
+    "DHR", "WFC", "LIN", "ACN", "CMG", "COP", "NEE", "PM", "LOW", "UNP",
+    "SPGI", "BLK", "DE", "UPS", "T", "NOW", "MS", "SCHW", "PLTR", "UBER", "SHOP", "SQ", "PYPL", "RIVN", "F", "GM"
+])))
+
+@st.cache_data(ttl=60 * 60)
+def fetch_universe() -> List[str]:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
+    
+    def _tables(url):
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        return pd.read_html(StringIO(r.text))
+
+    sp = []
+    try:
+        sp = _tables("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]["Symbol"].astype(str).tolist()
+    except Exception:
+        pass
+
+    ndx = []
+    try:
+        ndx_tables = _tables("https://en.wikipedia.org/wiki/Nasdaq-100")
+        for t in ndx_tables:
+            cols = [str(c).strip().lower() for c in t.columns]
+            col_name = next((c for c in cols if c in ["ticker", "symbol"]), None)
+            if col_name:
+                ndx = t[t.columns[cols.index(col_name)]].astype(str).tolist()
+                break
+    except Exception:
+        pass
+
+    cleaned = [s.replace(".", "-").strip().upper() for s in sp + ndx if s]
+    if not cleaned:
+        return FALLBACK_LIST
+    return sorted(list(dict.fromkeys(cleaned)))
+
 @st.cache_data(ttl=60*60)
 def fetch_sp500_only() -> List[str]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TradingTerminal/2.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
     try:
         r = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=20)
         tbl = pd.read_html(StringIO(r.text))[0]
         return sorted([s.replace(".", "-").strip().upper() for s in tbl["Symbol"].astype(str).tolist()])
     except Exception:
-        return fetch_universe()
+        return FALLBACK_LIST
 
 @st.cache_data(ttl=60*60)
 def fetch_ndx100_only() -> List[str]:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TradingTerminal/2.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
     try:
         r = requests.get("https://en.wikipedia.org/wiki/Nasdaq-100", headers=headers, timeout=20)
         for tbl in pd.read_html(StringIO(r.text)):
             cols = [str(c).strip().lower() for c in tbl.columns]
-            if "ticker" in cols:
-                return sorted([s.strip().upper() for s in tbl[tbl.columns[cols.index("ticker")]].astype(str).tolist()])
+            col_name = next((c for c in cols if c in ["ticker", "symbol"]), None)
+            if col_name:
+                return sorted([s.strip().upper() for s in tbl[tbl.columns[cols.index(col_name)]].astype(str).tolist()])
+        return FALLBACK_LIST
     except Exception:
-        pass
-    return fetch_universe()
+        return FALLBACK_LIST
 
 def get_universe(mode: str) -> List[str]:
     if mode == "Custom List":
@@ -331,9 +337,9 @@ def get_universe(mode: str) -> List[str]:
         parsed = [t.strip().upper() for t in raw.replace(","," ").split() if t.strip()]
         return parsed if parsed else fetch_universe()
     if mode == "S&P 500":
-        return fetch_sp500_only() or fetch_universe()
+        return fetch_sp500_only()
     elif mode == "Nasdaq-100":
-        return fetch_ndx100_only() or fetch_universe()
+        return fetch_ndx100_only()
     elif mode == "Dow Jones 30":
         return DOW30
     elif mode == "Major ETFs & Funds":
@@ -389,6 +395,13 @@ def init_defaults():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+def sync_settings():
+    """Sync persistent settings to URL Query Params"""
+    st.query_params["theme"] = st.session_state.theme
+    st.query_params["font"] = st.session_state.font
+    st.query_params["scan_list"] = st.session_state.scan_list
+    st.query_params["tabs"] = ",".join(st.session_state.active_tickers)
 
 
 # ── Theme CSS injection ───────────────────────────────────────────────────────
@@ -1028,7 +1041,7 @@ def build_candlestick_chart(
     fig.update_layout(
         paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"],
         font=dict(color=tc["sub"], size=11),
-        title=dict(text=f"<b>{ticker}</b> (Scroll back infinitely to view 5Y past history)", font=dict(color=tc["text"], size=15), pad=dict(b=8)),
+        title=dict(text=f"<b>{ticker}</b>", font=dict(color=tc["text"], size=15), pad=dict(b=8)),
         xaxis=dict(showgrid=True, gridcolor=tc["grid"], zeroline=False, rangeslider=dict(visible=False), color=tc["sub"], range=[start_dt, end_dt]),
         yaxis=dict(showgrid=True, gridcolor=tc["grid"], zeroline=False, color=tc["sub"], side="right"),
         height=520, dragmode="pan",
@@ -1248,7 +1261,6 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
                 "ATR":        round(last_atr, 2),
                 "Stop Loss":  round(last_close - 2*last_atr, 2),
                 "Verdict":    verdict_from_score(last_score),
-                "YF Link":    f"https://finance.yahoo.com/quote/{ticker}" # Quick shortcut to YF
             })
         except Exception:
             continue
@@ -1496,6 +1508,39 @@ def main():
 
                             if sc_vol:
                                 st.plotly_chart(build_volume_chart(df, st.session_state["az_period"]), use_container_width=True, config=_PCFG)
+                                
+                            # Feature: Specific Ticker News
+                            st.markdown(f'<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:28px 0 8px 0">LATEST NEWS FOR {t}</div>', unsafe_allow_html=True)
+                            ticker_news = fetch_market_news(t)
+                            if ticker_news:
+                                for item in ticker_news[:5]: # Show top 5 to keep it clean
+                                    pub_time = item.get("providerPublishTime", time.time())
+                                    dt_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d %H:%M")
+                                    
+                                    img_url = ""
+                                    try:
+                                        if "thumbnail" in item and item["thumbnail"] and "resolutions" in item["thumbnail"]["thumbnail"]:
+                                            img_url = item["thumbnail"]["thumbnail"]["resolutions"][0]["url"]
+                                        elif "thumbnail" in item and "resolutions" in item["thumbnail"]:
+                                            img_url = item["thumbnail"]["resolutions"][0]["url"]
+                                    except:
+                                        pass
+
+                                    img_html = f'<img src="{img_url}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px; flex-shrink: 0;">' if img_url else f'<div style="width: 60px; height: 60px; background: #2a2e39; border-radius: 4px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #787b86; font-size: 1.2rem;">📰</div>'
+
+                                    st.markdown(f"""
+                                    <div class="news-card" style="display: flex; gap: 12px; align-items: center; padding: 10px; margin-bottom: 8px;">
+                                        {img_html}
+                                        <div style="flex-grow: 1;">
+                                            <div class="news-title" style="font-size: 1rem; line-height: 1.2; margin-bottom: 4px;">
+                                                <a href="{item.get('link', '#')}" target="_blank" style="color: #2962ff; text-decoration: none;">{item.get('title', 'Headline')}</a>
+                                            </div>
+                                            <div class="news-meta" style="font-size: 0.75rem;">{item.get('publisher', 'Yahoo Finance')} • {dt_str}</div>
+                                        </div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                            else:
+                                st.caption(f"No recent news found for {t}.")
 
     # ════════════════════════════════════════════════════════
     # Tab 2 — Scanner
@@ -1542,9 +1587,11 @@ def main():
                 chg_cls   = "pick-chg-up" if row["1D Chg%"] >= 0 else "pick-chg-down"
                 chg_arrow = "▲" if row["1D Chg%"] >= 0 else "▼"
                 rs_color  = "#34d399" if row["RS vs SPY"] >= 0 else "#f87171"
+                yf_link   = f"https://finance.yahoo.com/quote/{row['Ticker']}"
+                
                 col.markdown(f"""
                 <div class="pick-card">
-                  <div class="pick-ticker">{row['Ticker']}</div>
+                  <div class="pick-ticker"><a href="{yf_link}" target="_blank" style="color: inherit; text-decoration: none;" title="Open in Yahoo Finance">{row['Ticker']} ↗</a></div>
                   <div class="pick-score">{row['Score']}</div>
                   <div style="color:#8b949e;font-size:0.65rem;margin-bottom:6px">/ 100</div>
                   <div class="pick-price">${row['Price']:.2f}</div>
@@ -1850,15 +1897,15 @@ def main():
                     img_html = f'<img src="{img_url}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0;">' if img_url else f'<div style="width: 100px; height: 100px; background: #2a2e39; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #787b86; font-size: 2rem;">📰</div>'
 
                     st.markdown(f"""
-                    <a href="{item.get('link', '#')}" target="_blank" style="text-decoration:none;">
-                        <div class="news-card" style="display: flex; gap: 15px; align-items: center;">
-                            {img_html}
-                            <div style="flex-grow: 1;">
-                                <div class="news-title" style="font-size: 1.1rem; line-height: 1.3; margin-bottom: 8px;">{item.get('title', 'Headline')}</div>
-                                <div class="news-meta">{item.get('publisher', 'Yahoo Finance')} • {dt_str}</div>
+                    <div class="news-card" style="display: flex; gap: 15px; align-items: center;">
+                        {img_html}
+                        <div style="flex-grow: 1;">
+                            <div class="news-title" style="font-size: 1.1rem; line-height: 1.3; margin-bottom: 8px;">
+                                <a href="{item.get('link', '#')}" target="_blank" style="color: #2962ff; text-decoration: none;">{item.get('title', 'Headline')}</a>
                             </div>
+                            <div class="news-meta">{item.get('publisher', 'Yahoo Finance')} • {dt_str}</div>
                         </div>
-                    </a>
+                    </div>
                     """, unsafe_allow_html=True)
             else:
                 st.info(f"No news fetched for {news_ticker}. Check connection or try another ticker.")
@@ -1866,16 +1913,16 @@ def main():
         with n_col2:
             st.markdown("#### Global Indices Snapshot")
             with st.spinner("Fetching..."):
-                try:
-                    majors = yf.download("SPY QQQ DIA IWM BTC-USD", period="5d", progress=False)["Close"]
-                    for c in ["SPY", "QQQ", "DIA", "IWM", "BTC-USD"]:
-                        if c in majors.columns:
-                            val = majors[c].iloc[-1]
-                            chg = (val / majors[c].iloc[-2] - 1) * 100
+                for c in ["SPY", "QQQ", "DIA", "IWM", "BTC-USD"]:
+                    try:
+                        df_idx = fetch_ohlcv(c, "1mo")
+                        if df_idx is not None and not df_idx.empty and len(df_idx) >= 2:
+                            val = df_idx["Close"].iloc[-1]
+                            chg = (val / df_idx["Close"].iloc[-2] - 1) * 100
                             name = "Bitcoin" if c == "BTC-USD" else c
-                            st.metric(name, f"${val:,.2f}", f"{chg:+.2f}%")
-                except:
-                    st.caption("Unable to fetch indices.")
+                            st.metric(name, f"${float(val):,.2f}", f"{float(chg):+.2f}%")
+                    except Exception as e:
+                        st.caption(f"Unable to fetch {c}.")
 
     # ════════════════════════════════════════════════════════
     # Tab 6 — Settings
