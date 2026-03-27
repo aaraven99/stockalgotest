@@ -4,7 +4,7 @@ import smtplib
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from io import StringIO
 from typing import Dict, List, Optional, Tuple
@@ -48,6 +48,7 @@ def get_ls_component():
       window.addEventListener("message", function(event) {
         if (event.data.type !== "streamlit:render") return;
         var args = event.data.args;
+        
         if (args.action === 'save') {
           if (window.lastSaveCounter === args.counter) return;
           window.lastSaveCounter = args.counter;
@@ -81,7 +82,7 @@ ls_sync = get_ls_component()
 
 # ── Settings initialization ──────────────────────────────────────────────────
 PERSISTENT_KEYS = [
-    "theme", "font", "scan_list", "custom_tickers", "auto_scan",
+    "theme", "font", "scan_list", "custom_tickers", "alert_watchlist", "auto_scan",
     "alert_browser", "alert_email", "alert_email_addr", "smtp_user", "smtp_pass",
     "scan_interval", "active_tickers", "az_period", "starting_capital",
     "paper_cash", "paper_portfolio", "paper_history",
@@ -94,7 +95,7 @@ PERSISTENT_KEYS = [
 def init_defaults():
     defaults = {
         "theme": "TradingView", "font": "JetBrains Mono", "scan_list": "S&P 500 + Nasdaq-100",
-        "custom_tickers": "", "auto_scan": False, "alert_browser": False,
+        "custom_tickers": "", "alert_watchlist": "", "auto_scan": False, "alert_browser": False,
         "alert_email": False, "alert_email_addr": "", "smtp_user": "", "smtp_pass": "",
         "scan_interval": 15, "active_tickers": ["AAPL"], "az_period": "1y",
         "starting_capital": 5000.0, "paper_cash": 5000.0, "paper_portfolio": {},
@@ -288,6 +289,24 @@ def fetch_sector_performance() -> pd.DataFrame:
         return pd.DataFrame(rows).sort_values("1D %", ascending=False).reset_index(drop=True)
     except: return pd.DataFrame()
 
+@st.cache_data(ttl=60*5, show_spinner=False)
+def fetch_watchlist_status(tickers: Tuple[str]) -> pd.DataFrame:
+    if not tickers: return pd.DataFrame()
+    rows = []
+    for t in tickers:
+        try:
+            df = fetch_ohlcv(t, "1y")
+            if df.empty or len(df) < 50: continue
+            df_ind = add_all_indicators(df, 14, 12, 26)
+            sc, _ = conviction_score(df_ind)
+            rows.append({
+                "Ticker": t,
+                "Price": float(df_ind["Close"].iloc[-1]),
+                "Verdict": verdict_from_score(float(sc.iloc[-1]))
+            })
+        except: pass
+    return pd.DataFrame(rows)
+
 # ── Email alert helper & Push Notifications ──────────────────────────────────
 def send_email_alert(to_addr: str, smtp_user: str, smtp_pass: str, subject: str, body: str) -> bool:
     try:
@@ -366,18 +385,37 @@ def atr(df: pd.DataFrame, p: int = 14) -> pd.Series:
 
 def add_all_indicators(df: pd.DataFrame, rsi_p: int=14, macd_f: int=12, macd_s: int=26) -> pd.DataFrame:
     x = df.copy()
+    # Trend
     x["EMA20"] = ema(x["Close"], 20); x["EMA50"] = ema(x["Close"], 50); x["EMA200"] = ema(x["Close"], 200)
     
+    # RSI
     delta = x["Close"].diff(); gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
     ag = gain.ewm(com=rsi_p-1, adjust=False).mean(); al = loss.ewm(com=rsi_p-1, adjust=False).mean()
     x["RSI"] = 100 - (100 / (1 + ag / al.replace(0, np.nan)))
     
+    # MACD
     ml = ema(x["Close"], macd_f) - ema(x["Close"], macd_s); sl = ema(ml, 9)
     x["MACD"] = ml; x["MACD_SIG"] = sl; x["MACD_HIST"] = ml - sl
     
     x["ATR"] = atr(x, 14); x["VOL_SMA20"] = x["Volume"].rolling(20).mean()
-    x["AVWAP"] = ((x["High"]+x["Low"]+x["Close"])/3 * x["Volume"]).cumsum() / x["Volume"].cumsum()
     
+    # True Anchored VWAP (Anchored to the lowest low of the last 252 trading days)
+    lookback = min(252, len(x))
+    if lookback > 0:
+        recent_low_idx = x["Low"].iloc[-lookback:].idxmin()
+        anchor_loc = x.index.get_loc(recent_low_idx)
+        tp = (x["High"] + x["Low"] + x["Close"]) / 3
+        # Calculate standard VWAP as a base for older data
+        base_vwap = (tp * x["Volume"]).cumsum() / x["Volume"].cumsum()
+        # Overwrite with truly Anchored VWAP from the swing low forward
+        vol_anchored = x["Volume"].iloc[anchor_loc:].cumsum()
+        tp_vol_anchored = (tp.iloc[anchor_loc:] * x["Volume"].iloc[anchor_loc:]).cumsum()
+        base_vwap.iloc[anchor_loc:] = tp_vol_anchored / vol_anchored.replace(0, np.nan)
+        x["AVWAP"] = base_vwap
+    else:
+        x["AVWAP"] = ((x["High"]+x["Low"]+x["Close"])/3 * x["Volume"]).cumsum() / x["Volume"].cumsum()
+    
+    # SuperTrend
     mid = (x["High"]+x["Low"])/2; atr_s = x["ATR"] * 3.0
     upper = mid + atr_s; lower = mid - atr_s
     st_line = pd.Series(np.nan, index=x.index); trend = pd.Series(1, index=x.index)
@@ -391,47 +429,81 @@ def add_all_indicators(df: pd.DataFrame, rsi_p: int=14, macd_f: int=12, macd_s: 
         st_line.iloc[i] = lower.iloc[i] if trend.iloc[i] == 1 else upper.iloc[i]
     x["SUPER"] = st_line
     
+    # Stochastic & Williams %R
     lo = x["Low"].rolling(14).min(); hi = x["High"].rolling(14).max()
     x["STO_K"] = 100 * ((x["Close"] - lo) / (hi - lo).replace(0, np.nan))
     x["STO_D"] = x["STO_K"].rolling(3).mean()
     x["WILLR"] = -100 * ((hi - x["Close"]) / (hi - lo).replace(0, np.nan))
     
+    # Bollinger Bands
     mid_bb = x["Close"].rolling(20).mean(); std_bb = x["Close"].rolling(20).std()
     x["BB_UP"] = mid_bb + 2*std_bb; x["BB_LOW"] = mid_bb - 2*std_bb; x["BB_MID"] = mid_bb
     
+    # Ichimoku
     x["TENKAN"] = (x["High"].rolling(9).max() + x["Low"].rolling(9).min()) / 2
     x["KIJUN"] = (x["High"].rolling(26).max() + x["Low"].rolling(26).min()) / 2
     x["SENKOU_A"] = ((x["TENKAN"] + x["KIJUN"]) / 2).shift(26)
     x["SENKOU_B"] = ((x["High"].rolling(52).max() + x["Low"].rolling(52).min()) / 2).shift(26)
     
+    # Volume & Money Flow
     x["OBV"] = (np.sign(x["Close"].diff().fillna(0)) * x["Volume"]).cumsum()
     mfm = ((x["Close"]-x["Low"]) - (x["High"]-x["Close"])) / (x["High"]-x["Low"]).replace(0, np.nan)
     x["CMF"] = (mfm * x["Volume"]).rolling(20).sum() / x["Volume"].rolling(20).sum()
+    
+    # RESTORED: ADX
+    up = x["High"].diff(); down = -x["Low"].diff()
+    pdm = np.where((up > down) & (up > 0), up, 0.0); ndm = np.where((down > up) & (down > 0), down, 0.0)
+    pdi = 100 * pd.Series(pdm, index=x.index).ewm(com=13, adjust=False).mean() / x["ATR"].replace(0, np.nan)
+    ndi = 100 * pd.Series(ndm, index=x.index).ewm(com=13, adjust=False).mean() / x["ATR"].replace(0, np.nan)
+    x["ADX"] = (100 * (pdi - ndi).abs() / (pdi + ndi).replace(0, np.nan)).ewm(com=13, adjust=False).mean()
+
+    # RESTORED: MFI
+    tp_all = (x["High"] + x["Low"] + x["Close"]) / 3
+    mf = tp_all * x["Volume"]
+    pos_mf = pd.Series(np.where(tp_all > tp_all.shift(), mf, 0.0), index=x.index).rolling(14).sum()
+    neg_mf = pd.Series(np.where(tp_all < tp_all.shift(), mf, 0.0), index=x.index).rolling(14).sum()
+    x["MFI"] = 100 - (100 / (1 + pos_mf / neg_mf.replace(0, np.nan)))
+
+    # RESTORED: Hammer / Engulfing
+    body = (x["Close"] - x["Open"]).abs()
+    lower_wick = x[["Open","Close"]].min(axis=1) - x["Low"]
+    upper_wick = x["High"] - x[["Open","Close"]].max(axis=1)
+    x["HAMMER"] = (lower_wick > 2 * body) & (upper_wick < body)
+    x["ENGULF"] = (x["Close"] > x["Open"]) & (x["Close"].shift() < x["Open"].shift()) & (x["Open"] <= x["Close"].shift()) & (x["Close"] >= x["Open"].shift())
     
     return x
 
 def conviction_score(df: pd.DataFrame) -> Tuple[pd.Series, List[str]]:
     score = pd.Series(50.0, index=df.index)
+    
+    # Apply weights using massive indicator suite to guarantee "25+ Indicators Engine"
     score += np.where(df["Close"] > df["AVWAP"], 8, -8)
     score += np.where(df["OBV"] > df["OBV"].rolling(10).mean(), 4, -4)
     score += np.where(df["CMF"] > 0, 4, -4)
+    score += np.where(df["MFI"] > 50, 3, -3)
     score += np.where((df["Close"] > df["EMA20"]) & (df["EMA20"] > df["EMA50"]), 8, -8)
+    score += np.where(df["ADX"] > 22, 5, -2)
     score += np.where(df["Close"] > np.maximum(df["SENKOU_A"], df["SENKOU_B"]), 5, -5)
     score += np.where(df["Close"] > df["SUPER"], 5, -5)
     score += np.where((df["RSI"] > 50) & (df["RSI"] < 72), 6, -6)
     score += np.where(df["MACD_HIST"] > 0, 6, -6)
     score += np.where(df["STO_K"] > df["STO_D"], 3, -3)
+    score += np.where(df["WILLR"] > -50, 2, -2)
     score += np.where(df["Close"] > df["BB_MID"], 3, -3)
+    score += np.where(df.get("HAMMER", False), 2, 0)
+    score += np.where(df.get("ENGULF", False), 2, 0)
     score += np.where(df["Volume"] > 1.4*df["VOL_SMA20"], 3, 0)
+    
     score = score.clip(0, 100)
     
     last = df.iloc[-1]
     reasons = []
-    if last["Close"] > last["AVWAP"]: reasons.append("Price is above Anchored VWAP (Support holding).")
+    if last["Close"] > last["AVWAP"]: reasons.append("Price is holding above recent Major Swing Low Anchored VWAP.")
     if last["EMA20"] > last["EMA50"]: reasons.append("Short-term EMA crossed above Mid-term EMA (Bullish trend).")
     if last["MACD_HIST"] > 0: reasons.append("MACD Histogram is positive (Momentum expanding).")
+    if last["ADX"] > 22: reasons.append("ADX confirms a strong, sustained directional trend.")
     if last["Close"] > last["SUPER"]: reasons.append("Price cleared SuperTrend resistance.")
-    if not reasons: reasons.append("Consolidating market conditions.")
+    if not reasons: reasons.append("Consolidating market conditions without extreme momentum.")
     return score, reasons[:3]
 
 def build_signals(df: pd.DataFrame) -> pd.Series:
@@ -615,6 +687,7 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
             
             sc, _ = conviction_score(df)
             last_c = float(df["Close"].iloc[-1])
+            last_atr = float(df["ATR"].iloc[-1])
             chg_1d = float((last_c / float(df["Close"].iloc[-2]) - 1) * 100) if len(df)>1 else 0.0
             chg_6m = float((last_c / float(df["Close"].iloc[int(len(df)/2)]) - 1) * 100) if len(df)>1 else 0.0
             
@@ -622,7 +695,7 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
                 "Ticker": t, "Price": round(last_c, 2), "1D Chg%": round(chg_1d, 2),
                 "6M Chg%": round(chg_6m, 2), "RS vs SPY": round(chg_6m - spy_ret, 2),
                 "Score": round(float(sc.iloc[-1]), 1), "RSI": round(float(df["RSI"].iloc[-1]), 1),
-                "Stop Loss": round(last_c - 2*float(df["ATR"].iloc[-1]), 2),
+                "Stop Loss": round(last_c - 2 * last_atr, 2), "Target": round(last_c + 2 * last_atr, 2),
                 "Verdict": verdict_from_score(float(sc.iloc[-1]))
             })
         except: continue
@@ -659,36 +732,82 @@ def main():
     inject_theme(st.session_state["theme"], st.session_state["font"])
     universe = get_universe(st.session_state["scan_list"])
     
-    # Check Auto Scan
+    # ── Watchlist & Auto Scan Logic ──
+    wl_raw = st.session_state.get("alert_watchlist", "")
+    wl_tickers = [t.strip().upper() for t in wl_raw.replace(",", " ").split() if t.strip()]
+
     if st.session_state.get("auto_scan", False):
         interval = int(st.session_state.get("scan_interval", 15)) * 60
         now = time.time(); last = float(st.session_state.get("last_auto_scan", 0.0))
         if now - last >= interval:
             st.session_state["last_auto_scan"] = now
-            with st.spinner(f"Auto-scan running on all {len(universe)} stocks…"):
-                res = scan_universe(tuple(universe), len(universe), auto_tune=True)
+            
+            # Combine universes safely to ensure Watchlist gets scanned
+            scan_targets = list(universe)
+            for t in wl_tickers:
+                if t not in scan_targets: scan_targets.append(t)
+                
+            with st.spinner(f"Auto-scan running on {len(scan_targets)} stocks…"):
+                res = scan_universe(tuple(scan_targets), len(scan_targets), auto_tune=True)
+                
             if not res.empty:
-                st.session_state["last_scan_results"] = res
+                # Save just the selected universe results for the Scanner tab
+                st.session_state["last_scan_results"] = res[res["Ticker"].isin(universe)]
                 buys = res[res["Verdict"] == "STRONG BUY"]
-                top5 = buys.head(5) if len(buys) >= 1 else res.head(5)
+                
+                # Check Watchlist Specific Alerts
+                wl_hits = buys[buys["Ticker"].isin(wl_tickers)]
+                top5 = buys[buys["Ticker"].isin(universe)].head(5) if not buys[buys["Ticker"].isin(universe)].empty else res.head(5)
+                
+                alert_triggered = False
+                title = "Trading Terminal Auto-Scan Update"
+                body = f"Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
+                
+                if not wl_hits.empty:
+                    alert_triggered = True
+                    title = f"🚨 WATCHLIST ALERT: {len(wl_hits)} Buy Signals!"
+                    body += "🎯 YOUR WATCHLIST BUY SIGNALS:\n"
+                    for _, row in wl_hits.iterrows():
+                        body += f"• {row['Ticker']}: STRONG BUY (Score {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop: ${row['Stop Loss']:.2f} | Target: ${row['Target']:.2f}\n"
+                    body += "\n"
+                
                 if not top5.empty:
-                    title = f"Trading Alert — Top {len(top5)} Picks Detected"
-                    body = f"Trading Terminal Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\nYour Top Picks:\n\n"
-                    for _, row in top5.iterrows(): body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f}\n"
+                    body += "🔥 Top Scanner Picks:\n"
+                    for _, row in top5.iterrows(): 
+                        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f}\n"
+                    if not alert_triggered:
+                        title = f"Trading Alert — Top {len(top5)} Picks Detected"
+                        alert_triggered = True
+
+                if alert_triggered:
+                    notif_ticker = wl_hits.iloc[0]['Ticker'] if not wl_hits.empty else top5.iloc[0]['Ticker']
                     if st.session_state.get("alert_browser"):
-                        st.session_state["pending_browser_notif"] = {"title": title, "body": f"{top5.iloc[0]['Ticker']} score {top5.iloc[0]['Score']}/100"}
+                        st.session_state["pending_browser_notif"] = {"title": title, "body": f"Check terminal for {notif_ticker} and others!"}
                     if st.session_state.get("alert_email") and st.session_state.get("alert_email_addr"):
                         if send_email_alert(st.session_state["alert_email_addr"], st.session_state.get("smtp_user", ""), st.session_state.get("smtp_pass", ""), title, body):
-                            st.toast("✅ Auto-scan email successfully sent!")
+                            st.toast("✅ Auto-scan alert email sent!")
                         else: st.toast("⚠️ Auto-scan email failed. Check App Password.", icon="⚠️")
                     else: st.toast("✅ Auto-scan completed!", icon="✅")
 
     with st.sidebar:
+        st.markdown("### 👀 Alert Watchlist")
+        if wl_tickers:
+            wl_df = fetch_watchlist_status(tuple(wl_tickers))
+            if not wl_df.empty:
+                for _, r in wl_df.iterrows():
+                    color = "#10b981" if r["Verdict"] == "STRONG BUY" else ("#ef4444" if r["Verdict"] == "STRONG SELL" else "#8b949e")
+                    st.markdown(f"**{r['Ticker']}** &nbsp; <span style='color:{color};font-size:0.8rem'>{r['Verdict']}</span> &nbsp; <span style='font-size:0.85rem'>${r['Price']:.2f}</span>", unsafe_allow_html=True)
+            else: st.caption("No data available for watchlist.")
+        else: st.caption("Configure in Settings.")
+        
+        st.markdown("---")
         if st.session_state.get("layout_show_sectors", True):
-            st.markdown("### 🔄 Sector Rotation Watchlist")
+            st.markdown("### 🔄 Sector Rotation")
             sdf = fetch_sector_performance()
             if not sdf.empty:
                 for _, r in sdf.iterrows(): st.metric(f"{r['Sector']} ({r['ETF']})", f"{r['1D %']:+.2f}%", f"{r['5D %']:+.2f}% (5D)")
+            else:
+                st.caption("Unable to fetch sector data.")
 
     tabs = st.tabs(["📈 ANALYZE", "🔍 SCANNER", "📊 BACKTEST", "💼 PAPER TRADING", "📰 NEWS", "⚙️ SETTINGS"])
 
@@ -815,11 +934,14 @@ def main():
             cols = st.columns(min(len(top5), 5))
             for col, (_, r) in zip(cols, top5.iterrows()):
                 c_cls = "pick-chg-up" if r["1D Chg%"] >= 0 else "pick-chg-down"
+                yf_link = f"https://finance.yahoo.com/quote/{r['Ticker']}"
+                
                 col.markdown(f"""
                 <div class="pick-card">
-                  <div class="pick-ticker"><a href="https://finance.yahoo.com/quote/{r['Ticker']}" target="_blank">{r['Ticker']} ↗</a></div>
+                  <div class="pick-ticker"><a href="{yf_link}" target="_blank">{r['Ticker']} ↗</a></div>
                   <div class="pick-score">{r['Score']}</div>
                   <div class="{c_cls}">${r['Price']:.2f} ({r['1D Chg%']:+.2f}%)</div>
+                  <div style="color:#8b949e;font-size:0.68rem;margin-top:6px">Stop ${r['Stop Loss']:.2f} · Target ${r['Target']:.2f}</div>
                 </div>""", unsafe_allow_html=True)
 
             st.markdown('<div style="margin:20px 0 10px 0;font-size:0.7rem;color:#8b949e;">SIGNAL HEATMAP</div>', unsafe_allow_html=True)
@@ -1000,6 +1122,9 @@ def main():
             st.session_state["scan_list"] = st.selectbox("Universe", ["Major ETFs & Funds", "S&P 500 + Nasdaq-100", "S&P 500", "Nasdaq-100", "Dow Jones 30", "Custom List"], index=0)
             if st.session_state["scan_list"] == "Custom List":
                 st.session_state["custom_tickers"] = st.text_area("Custom Tickers", st.session_state["custom_tickers"])
+            
+            st.markdown("#### Alerts & Watchlist")
+            st.session_state["alert_watchlist"] = st.text_area("Alert Watchlist (Tickers to Monitor)", st.session_state.get("alert_watchlist", ""), placeholder="e.g. TSLA, NVDA, AAPL")
             
             st.session_state["auto_scan"] = st.toggle("Enable auto-scan", st.session_state["auto_scan"])
             if st.session_state["auto_scan"]:
