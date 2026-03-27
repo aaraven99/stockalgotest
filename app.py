@@ -4,7 +4,7 @@ import smtplib
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from email.mime.text import MIMEText
 from io import StringIO
 from typing import Dict, List, Optional, Tuple
@@ -48,15 +48,12 @@ def get_ls_component():
       window.addEventListener("message", function(event) {
         if (event.data.type !== "streamlit:render") return;
         var args = event.data.args;
-        
         if (args.action === 'save') {
           if (window.lastSaveCounter === args.counter) return;
           window.lastSaveCounter = args.counter;
           try {
             window.localStorage.setItem(args.ls_key, JSON.stringify(args.data));
-          } catch(e) {
-            console.error("Save failed", e);
-          }
+          } catch(e) { console.error("Save failed", e); }
         } else if (args.action === 'load') {
           if (window.hasLoaded) return;
           window.hasLoaded = true;
@@ -206,31 +203,50 @@ st.markdown("""
 # ============================================================
 DOW30 = sorted(["AAPL","AMGN","AXP","BA","CAT","CRM","CSCO","CVX","DIS","DOW","GS","HD","HON","IBM","JNJ","JPM","KO","MCD","MMM","MRK","MSFT","NKE","PG","TRV","UNH","V","VZ","WBA","WMT","INTC"])
 ETFS_FUNDS = sorted(["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "ARKK", "GLD", "SLV", "USO", "UNG", "TLT", "TMF", "XLF", "XLK", "XLE", "XLU", "XLV", "XLY", "XLP", "XLI", "XLB", "XLRE"])
-FALLBACK_LIST = sorted(list(dict.fromkeys(DOW30 + ["NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "COST", "AMD", "NFLX", "ADBE", "QCOM", "AMAT", "INTU", "SBUX", "BKNG", "GILD"])))
+
+# Expansive Fallback List to guarantee robust scanning even if Wikipedia web-scraping fails entirely
+FALLBACK_LIST = sorted(list(dict.fromkeys(DOW30 + [
+    "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "AVGO", "COST", "AMD", "NFLX", "ADBE", "QCOM", "AMAT", "INTU", "SBUX", "BKNG", "GILD",
+    "ABNB", "ADI", "ADSK", "ALGN", "AMGN", "ANSS", "ASML", "AZN", "BIIB", "CDNS", "CHTR", "CMCSA", "CPRT", "CRWD", "CSX", "CTAS", "CTSH",
+    "DDOG", "DLTR", "DXCM", "EA", "EXC", "FANG", "FAST", "FTNT", "IDXX", "ILMN", "ISRG", "KDP", "KHC", "KLAC", "LRCX", "LULU",
+    "MAR", "MCHP", "MDLZ", "MELI", "MNST", "MRVL", "MU", "NXPI", "ODFL", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PYPL", 
+    "REGN", "ROST", "SIRI", "SNPS", "TMUS", "TXN", "VRSK", "VRTX", "WBD", "WDAY", "XEL", "ABT", "ABBV", "ACN", 
+    "AIG", "ALL", "MO", "AON", "APA", "A", "AWK", "BAC", "BK", "BSX", "BMY", "C", "COP", "CME", "COF", "CI",
+    "CVS", "DHR", "D", "DOV", "DTE", "DUK", "EMR", "EOG", "ECL", "ETN", "FCX", "FDX", "GD", "GE", "GIS", "HAL", "HIG", "ITW", 
+    "K", "KMB", "LIN", "LLY", "LMT", "LOW", "MA", "MDT", "MET", "MMC", "NEM", "NOC", "NSC", "ORCL",
+    "OXY", "PFE", "PGR", "PNC", "PRU", "PSA", "RTX", "SLB", "SO", "SPGI", "STZ", "SYK", "T", "TGT", "TJX", "TMO", "UNP", "UPS",
+    "USB", "VZ", "WFC", "WM", "XOM"
+])))
 
 @st.cache_data(ttl=60 * 60)
 def fetch_universe() -> List[str]:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    sp = []
     try:
         r = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=10)
-        sp = pd.read_html(StringIO(r.text))[0]["Symbol"].astype(str).tolist()
-    except: sp = []
+        sp = pd.read_html(StringIO(r.text), match="Symbol")[0]["Symbol"].astype(str).tolist()
+    except Exception: pass
+
+    ndx = []
     try:
         r = requests.get("https://en.wikipedia.org/wiki/Nasdaq-100", headers=headers, timeout=10)
-        ndx = []
         for t in pd.read_html(StringIO(r.text)):
             cols = [str(c).strip().lower() for c in t.columns]
             col = next((c for c in cols if c in ["ticker", "symbol"]), None)
-            if col: ndx = t[t.columns[cols.index(col)]].astype(str).tolist(); break
-    except: ndx = []
+            if col: 
+                ndx = t[t.columns[cols.index(col)]].astype(str).tolist()
+                break
+    except Exception: pass
+
     cleaned = [s.replace(".", "-").strip().upper() for s in sp + ndx if s]
-    return sorted(list(dict.fromkeys(cleaned))) if cleaned else FALLBACK_LIST
+    return sorted(list(dict.fromkeys(cleaned))) if len(cleaned) > 100 else FALLBACK_LIST
 
 @st.cache_data(ttl=60*60)
 def fetch_sp500_only() -> List[str]:
     try:
         r = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        return sorted([s.replace(".", "-").strip().upper() for s in pd.read_html(StringIO(r.text))[0]["Symbol"].astype(str).tolist()])
+        sp = pd.read_html(StringIO(r.text), match="Symbol")[0]["Symbol"].astype(str).tolist()
+        return sorted([s.replace(".", "-").strip().upper() for s in sp]) if len(sp) > 100 else FALLBACK_LIST
     except: return FALLBACK_LIST
 
 @st.cache_data(ttl=60*60)
@@ -240,7 +256,9 @@ def fetch_ndx100_only() -> List[str]:
         for tbl in pd.read_html(StringIO(r.text)):
             cols = [str(c).strip().lower() for c in tbl.columns]
             col = next((c for c in cols if c in ["ticker", "symbol"]), None)
-            if col: return sorted([s.strip().upper() for s in tbl[tbl.columns[cols.index(col)]].astype(str).tolist()])
+            if col: 
+                ndx = tbl[tbl.columns[cols.index(col)]].astype(str).tolist()
+                return sorted([s.strip().upper() for s in ndx]) if len(ndx) > 20 else FALLBACK_LIST
         return FALLBACK_LIST
     except: return FALLBACK_LIST
 
@@ -263,9 +281,9 @@ def fetch_sector_performance() -> pd.DataFrame:
         rows = []
         for name, ticker in sectors.items():
             if ticker in df.columns:
-                px_cur = float(df[ticker].iloc[-1])
-                chg_1d = (px_cur / float(df[ticker].iloc[-2]) - 1) * 100 if len(df) > 1 else 0
-                chg_5d = (px_cur / float(df[ticker].iloc[0]) - 1) * 100 if len(df) > 1 else 0
+                curr_price = float(df[ticker].iloc[-1])
+                chg_1d = (curr_price / float(df[ticker].iloc[-2]) - 1) * 100 if len(df) > 1 else 0.0
+                chg_5d = (curr_price / float(df[ticker].iloc[0]) - 1) * 100 if len(df) > 1 else 0.0
                 rows.append({"Sector": name, "ETF": ticker, "1D %": chg_1d, "5D %": chg_5d})
         return pd.DataFrame(rows).sort_values("1D %", ascending=False).reset_index(drop=True)
     except: return pd.DataFrame()
@@ -312,8 +330,31 @@ def fetch_ohlcv(ticker: str, period: str = "5y") -> pd.DataFrame:
 
 @st.cache_data(ttl=60 * 15)
 def fetch_market_news(ticker: str = "SPY") -> List[dict]:
-    try: return yf.Ticker(ticker).news[:15]
-    except: return []
+    # Extremely robust news fetcher: Tries yfinance native first, then falls back to reliable RSS parsing
+    try:
+        news = yf.Ticker(ticker).news
+        if news and len(news) > 0: return news[:15]
+    except Exception: pass
+    
+    # RSS Fallback
+    try:
+        import xml.etree.ElementTree as ET
+        url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+        resp = requests.get(url, timeout=5)
+        root = ET.fromstring(resp.text)
+        fallback_news = []
+        for item in root.findall('.//item')[:15]:
+            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+            try: dt = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z").timestamp()
+            except: dt = time.time()
+            fallback_news.append({
+                "title": item.find('title').text if item.find('title') is not None else "News",
+                "link": item.find('link').text if item.find('link') is not None else "#",
+                "publisher": "Yahoo Finance",
+                "providerPublishTime": dt
+            })
+        return fallback_news
+    except Exception: return []
 
 # ============================================================
 # Technical indicators & Strategy Base
@@ -411,7 +452,7 @@ def backtest_strategy(df: pd.DataFrame, signal: pd.Series) -> StrategyMetrics:
     eq   = (1 + sret).cumprod()
     pnl  = sret[sret != 0]
     
-    gp   = pnl[pnl > 0].sum(); gl = -pnl[pnl < 0].sum()
+    gp   = float(pnl[pnl > 0].sum()); gl = float(-pnl[pnl < 0].sum())
     pf   = float(gp / gl) if gl > 0 else 999.0
     wr   = float((pnl > 0).mean()) if len(pnl) else 0.0
     sh   = float(math.sqrt(252) * sret.mean() / sret.std()) if sret.std() > 0 else 0.0
@@ -457,6 +498,8 @@ def risk_levels(df: pd.DataFrame) -> Dict[str, float]:
 # ============================================================
 # Chart builders
 # ============================================================
+_PCFG = {"scrollZoom": True, "displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
+
 def build_candlestick_chart(df: pd.DataFrame, ticker: str, view_period: str, s: dict) -> go.Figure:
     tc = _THEMES.get(st.session_state.get("theme", "TradingView"), _THEMES["TradingView"])
     fig = go.Figure()
@@ -572,8 +615,8 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
             
             sc, _ = conviction_score(df)
             last_c = float(df["Close"].iloc[-1])
-            chg_1d = float((last_c / float(df["Close"].iloc[-2]) - 1) * 100)
-            chg_6m = float((last_c / float(df["Close"].iloc[int(len(df)/2)]) - 1) * 100)
+            chg_1d = float((last_c / float(df["Close"].iloc[-2]) - 1) * 100) if len(df)>1 else 0.0
+            chg_6m = float((last_c / float(df["Close"].iloc[int(len(df)/2)]) - 1) * 100) if len(df)>1 else 0.0
             
             rows.append({
                 "Ticker": t, "Price": round(last_c, 2), "1D Chg%": round(chg_1d, 2),
@@ -586,7 +629,6 @@ def scan_universe(tickers: List[str], max_scan: int, auto_tune: bool = False) ->
     pb.empty()
     return pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
 
-_PCFG = {"scrollZoom": True, "displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
 def _run_analysis(t: str):
     raw = fetch_ohlcv(t, "5y")
@@ -704,7 +746,8 @@ def main():
                             m4.metric("ATR", f"${last['ATR']:.2f}")
 
                             if st.session_state.get("layout_show_reasons"):
-                                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:20px 0 6px 0">SIGNAL DRIVERS</div>', unsafe_allow_html=True)
+                                st.caption(f"⚙️ Auto-Tuned Strategy Parameters for **{t}**: RSI({bp['rsi']}), MACD({bp['macd_fast']},{bp['macd_slow']})")
+                                st.markdown('<div style="font-size:0.68rem;letter-spacing:0.12em;color:#8b949e;margin:10px 0 6px 0">SIGNAL DRIVERS</div>', unsafe_allow_html=True)
                                 for i, r in enumerate(reasons, 1): st.markdown(f'<div class="reason-box">{i}. {r}</div>', unsafe_allow_html=True)
 
                             if st.session_state.get("layout_show_levels"):
@@ -738,7 +781,8 @@ def main():
                             # Ticker News
                             st.markdown(f'<div style="margin-top:20px; font-size:0.7rem; color:#8b949e;">LATEST NEWS FOR {t}</div>', unsafe_allow_html=True)
                             for n in fetch_market_news(t)[:3]:
-                                dt = datetime.fromtimestamp(n.get("providerPublishTime", time.time())).strftime("%Y-%m-%d")
+                                try: dt = datetime.fromtimestamp(n.get("providerPublishTime", time.time())).strftime("%Y-%m-%d")
+                                except: dt = "Recent"
                                 st.markdown(f'• <a href="{n.get("link","#")}" target="_blank">{n.get("title")}</a> ({dt})', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════
@@ -812,6 +856,7 @@ def main():
                         bh = (1 + ret).cumprod() * cap_in
                         
                         st.markdown(f"#### Results: {bt_t}")
+                        st.caption(f"⚙️ Auto-Tuned Strategy Parameters: RSI({bp['rsi']}), MACD({bp['macd_fast']},{bp['macd_slow']})")
                         c1, c2, c3, c4 = st.columns(4)
                         c1.metric("Strategy Final", f"${float(eq.iloc[-1]):,.2f}", f"{m.total_return:+.1%}")
                         c2.metric("Buy & Hold", f"${float(bh.iloc[-1]):,.2f}", f"{m.buy_hold_return:+.1%}")
@@ -844,14 +889,14 @@ def main():
             
             pt_t = st.selectbox("Asset", st.session_state.active_tickers) if st.session_state.active_tickers else None
             safe_max = max(10.0, pc_val)
-            pt_amt = st.number_input("Amount ($)", min_value=10.0, max_value=safe_max, value=min(500.0, safe_max), step=50.0, format="%.2f")
+            pt_amt = st.number_input("Amount ($)", min_value=10.0, max_value=float(safe_max), value=float(min(500.0, safe_max)), step=50.0, format="%.2f")
             
             c_b, c_s = st.columns(2)
             if c_b.button("BUY", type="primary", use_container_width=True) and pt_t:
                 raw = fetch_ohlcv(pt_t, "1mo")
                 if not raw.empty:
-                    px = float(raw["Close"].iloc[-1])
-                    sh = float(pt_amt) / px
+                    curr_price = float(raw["Close"].iloc[-1])
+                    sh = float(pt_amt) / curr_price
                     if pc_val >= float(pt_amt):
                         st.session_state["paper_cash"] = pc_val - float(pt_amt)
                         port = st.session_state["paper_portfolio"]
@@ -859,8 +904,8 @@ def main():
                             o_sh = port[pt_t]["shares"]; o_px = port[pt_t]["avg_price"]
                             port[pt_t]["avg_price"] = ((o_sh * o_px) + float(pt_amt)) / (o_sh + sh)
                             port[pt_t]["shares"] += sh
-                        else: port[pt_t] = {"shares": sh, "avg_price": px}
-                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "BUY", "Ticker": pt_t, "Price": px, "Shares": sh})
+                        else: port[pt_t] = {"shares": sh, "avg_price": curr_price}
+                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "BUY", "Ticker": pt_t, "Price": curr_price, "Shares": sh})
                         st.success("Bought!")
                         st.rerun()
             
@@ -869,12 +914,12 @@ def main():
                 if pt_t in port:
                     raw = fetch_ohlcv(pt_t, "1mo")
                     if not raw.empty:
-                        px = float(raw["Close"].iloc[-1])
+                        curr_price = float(raw["Close"].iloc[-1])
                         sh = port[pt_t]["shares"]
-                        val = sh * px
+                        val = sh * curr_price
                         st.session_state["paper_cash"] += val
                         del port[pt_t]
-                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "SELL", "Ticker": pt_t, "Price": px, "Shares": sh})
+                        st.session_state["paper_history"].append({"Time": datetime.now().strftime("%Y-%m-%d %H:%M"), "Action": "SELL", "Ticker": pt_t, "Price": curr_price, "Shares": sh})
                         st.success("Sold!")
                         st.rerun()
 
@@ -893,9 +938,9 @@ def main():
                 rows = []
                 for k, v in st.session_state["paper_portfolio"].items():
                     raw = fetch_ohlcv(k, "1mo")
-                    px = float(raw["Close"].iloc[-1]) if not raw.empty else v["avg_price"]
-                    pnl = (px / v["avg_price"] - 1) * 100
-                    rows.append({"Ticker": k, "Shares": round(v["shares"],4), "Entry": f"${v['avg_price']:.2f}", "Current": f"${px:.2f}", "Value": f"${v['shares']*px:.2f}", "PnL": f"{pnl:+.2f}%"})
+                    curr_price = float(raw["Close"].iloc[-1]) if not raw.empty else v["avg_price"]
+                    pnl = (curr_price / v["avg_price"] - 1) * 100
+                    rows.append({"Ticker": k, "Shares": round(v["shares"],4), "Entry": f"${v['avg_price']:.2f}", "Current": f"${curr_price:.2f}", "Value": f"${v['shares']*curr_price:.2f}", "PnL": f"{pnl:+.2f}%"})
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             else: st.caption("No open positions.")
             
@@ -914,11 +959,12 @@ def main():
             items = fetch_market_news(nt)
             if items:
                 for i in items:
-                    dt = datetime.fromtimestamp(i.get("providerPublishTime", time.time())).strftime("%Y-%m-%d %H:%M")
+                    try: dt = datetime.fromtimestamp(i.get("providerPublishTime", time.time())).strftime("%Y-%m-%d %H:%M")
+                    except: dt = "Recent"
                     img = ""
                     try: img = i["thumbnail"]["resolutions"][0]["url"]
                     except: pass
-                    img_html = f'<img src="{img}" style="width:80px;height:80px;border-radius:6px;object-fit:cover;">' if img else '<div style="width:80px;height:80px;background:#2a2e39;border-radius:6px;"></div>'
+                    img_html = f'<img src="{img}" style="width:80px;height:80px;border-radius:6px;object-fit:cover;">' if img else '<div style="width:80px;height:80px;background:#2a2e39;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;">📰</div>'
                     st.markdown(f"""
                     <div style="display:flex;gap:15px;margin-bottom:15px;background:#1e222d;padding:15px;border-radius:8px;">
                       {img_html}
@@ -927,12 +973,14 @@ def main():
                         <div style="color:#787b86;font-size:0.8rem;margin-top:5px;">{i.get('publisher')} • {dt}</div>
                       </div>
                     </div>""", unsafe_allow_html=True)
-            else: st.info("No news found.")
+            else: st.info("No news found. Checking RSS fallback...")
         with n2:
             for c in ["SPY", "QQQ", "DIA", "BTC-USD"]:
                 raw = fetch_ohlcv(c, "1mo")
                 if not raw.empty and len(raw) > 1:
-                    st.metric(c, f"${raw['Close'].iloc[-1]:.2f}", f"{(raw['Close'].iloc[-1]/raw['Close'].iloc[-2]-1)*100:+.2f}%")
+                    c_price = float(raw['Close'].iloc[-1])
+                    c_prev = float(raw['Close'].iloc[-2])
+                    st.metric(c, f"${c_price:.2f}", f"{(c_price/c_prev-1)*100:+.2f}%")
 
     # ════════════════════════════════════════════════════════
     # TAB 6: SETTINGS
@@ -941,9 +989,9 @@ def main():
         s1, s2 = st.columns(2, gap="large")
         with s1:
             if st.selectbox("Theme", list(_THEMES.keys()), index=list(_THEMES.keys()).index(st.session_state["theme"])) != st.session_state["theme"]:
-                st.session_state["theme"] = _THEMES.keys()[0]; sync_settings(); st.rerun()
+                st.session_state["theme"] = _THEMES.keys()[0]; st.rerun()
             if st.selectbox("Font", list(_FONT_CSS.keys()), index=list(_FONT_CSS.keys()).index(st.session_state["font"])) != st.session_state["font"]:
-                st.session_state["font"] = _FONT_CSS.keys()[0]; sync_settings(); st.rerun()
+                st.session_state["font"] = _FONT_CSS.keys()[0]; st.rerun()
             st.session_state["layout_show_reasons"] = st.checkbox("Show Logic Drivers", st.session_state["layout_show_reasons"])
             st.session_state["layout_show_levels"] = st.checkbox("Show Trade Levels", st.session_state["layout_show_levels"])
             st.session_state["layout_show_kpis"] = st.checkbox("Show KPIs", st.session_state["layout_show_kpis"])
