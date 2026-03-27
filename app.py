@@ -54,7 +54,6 @@ def get_ls_component():
           window.lastSaveCounter = args.counter;
           try {
             window.localStorage.setItem(args.ls_key, JSON.stringify(args.data));
-            // Silent save to prevent infinite rerun loops
           } catch(e) {
             console.error("Save failed", e);
           }
@@ -583,7 +582,8 @@ def fetch_ohlcv(ticker: str, period: str = "5y") -> pd.DataFrame:
     df = yf.download(ticker, period=period, auto_adjust=True, progress=False)
     if df.empty:
         return df
-    df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] for c in df.columns]
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 @st.cache_data(ttl=60 * 15)
@@ -1261,6 +1261,7 @@ def scan_universe(tickers: List[str], max_scan: int = 80, auto_tune: bool = Fals
                 "ATR":        round(last_atr, 2),
                 "Stop Loss":  round(last_close - 2*last_atr, 2),
                 "Verdict":    verdict_from_score(last_score),
+                "YF Link":    f"https://finance.yahoo.com/quote/{ticker}" # Quick shortcut to YF
             })
         except Exception:
             continue
@@ -1303,9 +1304,15 @@ def main():
             st.stop()
         else:
             if load_res.get("status") == "loaded" and load_res.get("data"):
-                # Apply restored data safely to session state
+                # Safely cast explicit float inputs to avoid Streamlit Mixed Numeric Types crashes
                 for k, v in load_res["data"].items():
-                    st.session_state[k] = v
+                    if k in ["starting_capital", "paper_cash", "auto_top_score", "scan_interval"]:
+                        try:
+                            st.session_state[k] = float(v)
+                        except Exception:
+                            st.session_state[k] = v
+                    else:
+                        st.session_state[k] = v
             st.session_state["ls_loaded"] = True
             st.rerun()
 
@@ -1555,7 +1562,7 @@ def main():
             )
             auto_tune = st.checkbox("Auto-Tune Indicators per stock", value=True, help="Runs optimization per-stock to find best params perfectly guided for it.")
         with sc3:
-            st.markdown('<div style="margin-top:28px"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="margin-top:32px"></div>', unsafe_allow_html=True)
             scan_btn = st.button("SCAN NOW", type="primary", use_container_width=True,
                                  help="Scan stocks and rank by conviction score.")
 
@@ -1645,16 +1652,17 @@ def main():
                 help="How far back to test. Longer windows give more trades and more reliable stats.",
             )
 
-            start_cap = st.number_input(
+            # Safely typed explicit int inputs
+            start_cap_val = int(st.session_state.get("starting_capital", 5000.0))
+            start_cap_input = st.number_input(
                 "Starting capital ($)", 
-                min_value=100.0, 
-                max_value=1_000_000.0,
-                value=float(st.session_state.get("starting_capital", 5000.0)),
-                step=100.0, 
-                format="%.2f",
+                min_value=100, 
+                max_value=1000000,
+                value=start_cap_val,
+                step=100, 
                 help="How much money you would have started with. The backtest shows how it grows or shrinks.",
             )
-            st.session_state["starting_capital"] = start_cap
+            st.session_state["starting_capital"] = float(start_cap_input)
 
             run_bt = st.button("RUN BACKTEST", type="primary", use_container_width=True,
                                help="Calibrates parameters specifically for this stock, then tests strategy signals on historical data.")
@@ -1675,15 +1683,16 @@ def main():
                     rl_bt  = risk_levels(df_bt)
 
                     # Dollar simulation
+                    start_cap_float = float(st.session_state["starting_capital"])
                     pos    = np.where(sig_bt.replace(0, np.nan).ffill().shift().fillna(0) > 0, 1, 0)
                     ret    = df_bt["Close"].pct_change().fillna(0)
                     s_eq   = (1 + pd.Series(pos, index=df_bt.index) * ret).cumprod()
                     bh_eq  = (1 + ret).cumprod()
 
-                    strat_final  = start_cap * float(s_eq.iloc[-1])
-                    bh_final     = start_cap * float(bh_eq.iloc[-1])
-                    strat_pnl    = strat_final - start_cap
-                    bh_pnl       = bh_final - start_cap
+                    strat_final  = start_cap_float * float(s_eq.iloc[-1])
+                    bh_final     = start_cap_float * float(bh_eq.iloc[-1])
+                    strat_pnl    = strat_final - start_cap_float
+                    bh_pnl       = bh_final - start_cap_float
 
                     # Dollar banner
                     bang = "profit" if strat_pnl >= 0 else "loss"
@@ -1692,7 +1701,7 @@ def main():
                     <div style="background:{tc['card']};border:1px solid {tc['border']};border-radius:10px;
                                 padding:18px 22px;margin-bottom:18px">
                       <div style="font-size:0.7rem;letter-spacing:0.1em;color:{tc['sub']};margin-bottom:8px">
-                        ${start_cap:,.0f} STARTING CAPITAL · <a href="https://finance.yahoo.com/quote/{bt_ticker}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed;" title="Open in Yahoo Finance">{bt_ticker} ↗</a> · {bt_period.upper()}
+                        ${start_cap_float:,.0f} STARTING CAPITAL · <a href="https://finance.yahoo.com/quote/{bt_ticker}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed;" title="Open in Yahoo Finance">{bt_ticker} ↗</a> · {bt_period.upper()}
                       </div>
                       <div style="display:flex;gap:40px;align-items:center">
                         <div>
@@ -1745,8 +1754,8 @@ def main():
                         </div>""", unsafe_allow_html=True)
 
                     # Equity curve in dollar terms
-                    s_eq_d  = s_eq  * start_cap
-                    bh_eq_d = bh_eq * start_cap
+                    s_eq_d  = s_eq  * start_cap_float
+                    bh_eq_d = bh_eq * start_cap_float
 
                     eq_fig = go.Figure()
                     eq_fig.add_trace(go.Scatter(x=df_bt.index, y=s_eq_d,  name="Strategy ($)",
@@ -1762,13 +1771,13 @@ def main():
                         eq_fig.add_trace(go.Scatter(x=sells_i, y=s_eq_d[sells_i], mode="markers",
                                                      name="Sell", marker=dict(symbol="triangle-down", color="#ef4444", size=9)))
 
-                    eq_fig.add_hline(y=start_cap, line_dash="dot", line_color=tc["border"],
-                                     annotation_text=f"${start_cap:,.0f} start", annotation_position="right",
+                    eq_fig.add_hline(y=start_cap_float, line_dash="dot", line_color=tc["border"],
+                                     annotation_text=f"${start_cap_float:,.0f} start", annotation_position="right",
                                      annotation_font=dict(color=tc["sub"], size=10))
                     eq_fig.update_layout(
                         paper_bgcolor=tc["chart"], plot_bgcolor=tc["chart"],
                         font=dict(color=tc["sub"], size=11),
-                        title=dict(text=f"<b>{bt_ticker}</b> — Portfolio Value (${start_cap:,.0f} starting capital)",
+                        title=dict(text=f"<b>{bt_ticker}</b> — Portfolio Value (${start_cap_float:,.0f} starting capital)",
                                    font=dict(color=tc["text"], size=13)),
                         xaxis=dict(showgrid=True, gridcolor=tc["grid"], color=tc["sub"]),
                         yaxis=dict(showgrid=True, gridcolor=tc["grid"], color=tc["sub"],
@@ -1792,22 +1801,25 @@ def main():
             st.markdown("### 💼 Execute Simulation")
             st.metric("Virtual Balance", f"${st.session_state.paper_cash:,.2f}")
             
-            trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers) if st.session_state.active_tickers else None
+            trade_ticker = st.selectbox("Select Asset to Trade", st.session_state.active_tickers, key="paper_trade_ticker") if st.session_state.active_tickers else None
             
-            paper_cash_val = float(st.session_state.paper_cash)
-            safe_max = max(10.0, paper_cash_val)
-            safe_val = min(500.0, safe_max)
-            trade_amt = st.number_input(
+            # Safely typed explicit int inputs
+            paper_cash_val = int(st.session_state.get("paper_cash", 5000.0))
+            safe_max = max(10, paper_cash_val)
+            safe_val = min(500, safe_max)
+            
+            trade_amt_input = st.number_input(
                 "Amount to Risk ($)", 
-                min_value=10.0, 
-                max_value=float(safe_max), 
-                value=float(safe_val), 
-                step=100.0, 
-                format="%.2f"
+                min_value=10, 
+                max_value=safe_max, 
+                value=safe_val, 
+                step=100,
+                key="paper_trade_amt"
             )
+            trade_amt = float(trade_amt_input)
             
             tc1, tc2 = st.columns(2)
-            if tc1.button("BUY", use_container_width=True, type="primary") and trade_ticker:
+            if tc1.button("BUY", use_container_width=True, type="primary", key="paper_buy") and trade_ticker:
                 raw = fetch_ohlcv(trade_ticker, "1mo")
                 if not raw.empty:
                     px_cur = float(raw["Close"].iloc[-1])
@@ -1815,7 +1827,6 @@ def main():
                     if st.session_state.paper_cash >= trade_amt:
                         st.session_state.paper_cash -= trade_amt
                         if trade_ticker in st.session_state.paper_portfolio:
-                            # Average price calculation
                             old_shares = st.session_state.paper_portfolio[trade_ticker]["shares"]
                             old_avg = st.session_state.paper_portfolio[trade_ticker]["avg_price"]
                             new_avg = ((old_shares * old_avg) + trade_amt) / (old_shares + shares)
@@ -1829,7 +1840,7 @@ def main():
                     else:
                         st.error("Insufficient Funds.")
                         
-            if tc2.button("SELL ALL", use_container_width=True) and trade_ticker:
+            if tc2.button("SELL ALL", use_container_width=True, key="paper_sell") and trade_ticker:
                 if trade_ticker in st.session_state.paper_portfolio:
                     raw = fetch_ohlcv(trade_ticker, "1mo")
                     if not raw.empty:
@@ -1846,9 +1857,11 @@ def main():
 
             st.markdown("---")
             st.markdown("### 📐 Risk Manager")
-            acct_size = st.number_input("Total Account Size ($)", value=float(st.session_state.paper_cash), step=500.0, format="%.2f")
-            risk_pct = st.slider("Risk Limit % per Trade", 0.5, 5.0, 1.0, 0.1)
-            stop_loss_pct = st.number_input("Expected Stop Loss %", value=5.0, step=0.5, format="%.1f")
+            acct_size_input = st.number_input("Total Account Size ($)", value=int(st.session_state.paper_cash), step=500, key="paper_acct_size")
+            acct_size = float(acct_size_input)
+            
+            risk_pct = st.slider("Risk Limit % per Trade", 0.5, 5.0, 1.0, 0.1, key="paper_risk_pct")
+            stop_loss_pct = st.number_input("Expected Stop Loss %", min_value=0.5, max_value=100.0, value=5.0, step=0.5, format="%.1f", key="paper_stop_loss_pct")
             
             risk_amt = (acct_size * risk_pct) / 100
             max_pos_size = risk_amt / (stop_loss_pct / 100) if stop_loss_pct > 0 else 0
