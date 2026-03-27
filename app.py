@@ -310,7 +310,8 @@ def fetch_watchlist_status(tickers: Tuple[str]) -> pd.DataFrame:
 # ── Email alert helper & Push Notifications ──────────────────────────────────
 def send_email_alert(to_addr: str, smtp_user: str, smtp_pass: str, subject: str, body: str) -> bool:
     try:
-        msg = MIMEText(body, "plain")
+        # Changed to HTML to allow for bolding, lines, and professional formatting
+        msg = MIMEText(body, "html")
         msg["Subject"] = subject
         msg["From"] = smtp_user
         msg["To"] = to_addr
@@ -476,17 +477,22 @@ def add_all_indicators(df: pd.DataFrame, rsi_p: int=14, macd_f: int=12, macd_s: 
 def conviction_score(df: pd.DataFrame) -> Tuple[pd.Series, List[str]]:
     score = pd.Series(50.0, index=df.index)
     
-    # Apply weights using massive indicator suite to guarantee "25+ Indicators Engine"
+    # ── ADVANCED MATH / ENGINE UPGRADE ──
+    # Added Macro Trend Filtering & stricter threshold checks
     score += np.where(df["Close"] > df["AVWAP"], 8, -8)
     score += np.where(df["OBV"] > df["OBV"].rolling(10).mean(), 4, -4)
     score += np.where(df["CMF"] > 0, 4, -4)
     score += np.where(df.get("MFI", pd.Series(50, index=df.index)) > 50, 3, -3)
     score += np.where((df["Close"] > df["EMA20"]) & (df["EMA20"] > df["EMA50"]), 8, -8)
+    score += np.where(df["Close"] > df["EMA200"], 6, -6) # Strong MACRO trend requirement
     score += np.where(df.get("ADX", pd.Series(20, index=df.index)) > 22, 5, -2)
     score += np.where(df["Close"] > np.maximum(df["SENKOU_A"], df["SENKOU_B"]), 5, -5)
     score += np.where(df["Close"] > df["SUPER"], 5, -5)
-    score += np.where((df["RSI"] > 50) & (df["RSI"] < 72), 6, -6)
-    score += np.where(df["MACD_HIST"] > 0, 6, -6)
+    
+    # Stricter momentum scoring (Penalize for overbought RSI > 75)
+    score += np.where((df["RSI"] > 45) & (df["RSI"] < 75), 6, -8) 
+    score += np.where(df["MACD"] > df["MACD_SIG"], 5, -5) # MACD Crossover bullish
+    score += np.where(df["MACD_HIST"] > 0, 4, -4)
     score += np.where(df["STO_K"] > df["STO_D"], 3, -3)
     score += np.where(df["WILLR"] > -50, 2, -2)
     score += np.where(df["Close"] > df["BB_MID"], 3, -3)
@@ -498,9 +504,9 @@ def conviction_score(df: pd.DataFrame) -> Tuple[pd.Series, List[str]]:
     
     last = df.iloc[-1]
     reasons = []
+    if last["Close"] > last["EMA200"]: reasons.append("Macro Trend aligns bullish (Price > 200 EMA).")
     if last["Close"] > last["AVWAP"]: reasons.append("Price is holding above recent Major Swing Low Anchored VWAP.")
-    if last["EMA20"] > last["EMA50"]: reasons.append("Short-term EMA crossed above Mid-term EMA (Bullish trend).")
-    if last["MACD_HIST"] > 0: reasons.append("MACD Histogram is positive (Momentum expanding).")
+    if last["MACD"] > last["MACD_SIG"]: reasons.append("MACD has crossed above its Signal Line (Bullish momentum).")
     if last.get("ADX", 0) > 22: reasons.append("ADX confirms a strong, sustained directional trend.")
     if last["Close"] > last["SUPER"]: reasons.append("Price cleared SuperTrend resistance.")
     if not reasons: reasons.append("Consolidating market conditions without extreme momentum.")
@@ -752,32 +758,56 @@ def main():
             if not res.empty:
                 # Save just the selected universe results for the Scanner tab
                 st.session_state["last_scan_results"] = res[res["Ticker"].isin(universe)]
-                buys = res[res["Verdict"] == "STRONG BUY"]
                 
-                # Check Watchlist Specific Alerts
-                wl_hits = buys[buys["Ticker"].isin(wl_tickers)]
-                top5 = buys[buys["Ticker"].isin(universe)].head(5) if not buys[buys["Ticker"].isin(universe)].empty else res.head(5)
+                # ── HTML EMAIL CONSTRUCTION ──
+                buys = res[res["Verdict"] == "STRONG BUY"]
+                wl_hits = buys[buys["Ticker"].isin(wl_tickers)].head(15) # STRICT TOP 15 WATCHLIST BUYS
+                top5 = buys[buys["Ticker"].isin(universe)].head(5)       # STRICT TOP 5 SCANNER BUYS
                 
                 alert_triggered = False
                 title = "Trading Terminal Auto-Scan Update"
-                body = f"Auto-Scan completed at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
+                
+                body = f"""
+                <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                    <h2 style="color: #2962ff;">📈 Trading Terminal Auto-Scan Update</h2>
+                    <p>Scan completed at <b>{datetime.now().strftime('%Y-%m-%d %H:%M')}</b>.</p>
+                """
                 
                 if not wl_hits.empty:
                     alert_triggered = True
-                    title = f"🚨 WATCHLIST ALERT: {len(wl_hits)} Buy Signals!"
-                    body += "🎯 YOUR WATCHLIST BUY SIGNALS:\n"
+                    title = f"🚨 WATCHLIST ALERT: {len(wl_hits)} Strong Buys Detected!"
+                    body += '<h3 style="color: #10b981; margin-top: 30px;">🎯 YOUR WATCHLIST BUY SIGNALS</h3>'
                     for _, row in wl_hits.iterrows():
-                        body += f"• {row['Ticker']}: STRONG BUY (Score {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop Loss: ${row['Stop Loss']:.2f} | Goal Price: ${row['Goal Price']:.2f}\n"
-                    body += "\n"
+                        body += f"""
+                        <div style="margin-bottom: 15px;">
+                            <span style="font-size: 1.1em;"><b>{row['Ticker']}</b></span> &nbsp;|&nbsp; 
+                            <span style="color: #10b981; font-weight: bold;">STRONG BUY</span> (Score: {row['Score']}/100)<br>
+                            Price: <b>${row['Price']:.2f}</b> &nbsp;|&nbsp; Stop Loss: <b>${row['Stop Loss']:.2f}</b> &nbsp;|&nbsp; Goal Price: <b>${row['Goal Price']:.2f}</b>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid #ccc; margin: 15px 0;">
+                        """
                 
                 if not top5.empty:
-                    body += "🔥 Top 5 Scanner Picks:\n"
-                    for _, row in top5.iterrows(): 
-                        body += f"• {row['Ticker']}: {row['Verdict']} (Score: {row['Score']}/100) | Price: ${row['Price']:.2f} | Stop Loss: ${row['Stop Loss']:.2f} | Goal Price: ${row['Goal Price']:.2f}\n"
                     if not alert_triggered:
-                        title = f"Trading Alert — Top 5 Picks Detected"
+                        title = f"Trading Alert — Top {len(top5)} Picks Detected"
                         alert_triggered = True
+                    body += '<h3 style="color: #f59e0b; margin-top: 30px;">🔥 TOP 5 SCANNER PICKS</h3>'
+                    for _, row in top5.iterrows():
+                        body += f"""
+                        <div style="margin-bottom: 15px;">
+                            <span style="font-size: 1.1em;"><b>{row['Ticker']}</b></span> &nbsp;|&nbsp; 
+                            <span style="color: #10b981; font-weight: bold;">STRONG BUY</span> (Score: {row['Score']}/100)<br>
+                            Price: <b>${row['Price']:.2f}</b> &nbsp;|&nbsp; Stop Loss: <b>${row['Stop Loss']:.2f}</b> &nbsp;|&nbsp; Goal Price: <b>${row['Goal Price']:.2f}</b>
+                        </div>
+                        <hr style="border: 0; border-top: 1px solid #ccc; margin: 15px 0;">
+                        """
+                
+                body += """
+                    <p style="font-size: 0.9em; color: #666; margin-top: 20px;">Open the Trading Terminal to view full charts and advanced metrics.</p>
+                </div>
+                """
 
+                # Trigger Alerts ONLY if there are confident Strong Buys
                 if alert_triggered:
                     notif_ticker = wl_hits.iloc[0]['Ticker'] if not wl_hits.empty else top5.iloc[0]['Ticker']
                     if st.session_state.get("alert_browser"):
@@ -786,12 +816,12 @@ def main():
                     if st.session_state.get("alert_email"):
                         if st.session_state.get("alert_email_addr") and st.session_state.get("smtp_user") and st.session_state.get("smtp_pass"):
                             if send_email_alert(st.session_state["alert_email_addr"], st.session_state.get("smtp_user", ""), st.session_state.get("smtp_pass", ""), title, body):
-                                st.toast("✅ Auto-scan alert email sent with Top 5 Picks!")
+                                st.toast("✅ Auto-scan alert HTML email sent with Top Picks!")
                             else: st.toast("⚠️ Auto-scan email failed. Check App Password.", icon="⚠️")
                         else:
                             st.toast("⚠️ Auto-scan complete, but email failed (Missing credentials in Settings).", icon="⚠️")
                     else: 
-                        st.toast("✅ Auto-scan completed!", icon="✅")
+                        st.toast("✅ Auto-scan completed. Confident signals found!", icon="✅")
 
     with st.sidebar:
         st.markdown("### 👀 Alert Watchlist")
@@ -888,7 +918,7 @@ def main():
                                   <div class="risk-row"><span class="risk-label">🎯 Goal 3</span><span class="risk-pt3">${rl['pt3']:.2f} <span style="font-size:0.75rem">(+{pct_3:.1f}%)</span></span></div>
                                 </div>""", unsafe_allow_html=True)
 
-                            st.markdown('<div style="margin-top:16px"></div>', unsafe_allow_html=True)
+                            st.markdown('<div style="margin:top:16px"></div>', unsafe_allow_html=True)
                             
                             c_fig = build_candlestick_chart(df, t, st.session_state["az_period"], st.session_state)
                             b_px = df.index[sig == 1]; s_px = df.index[sig == -1]
@@ -1152,7 +1182,15 @@ def main():
                         st.session_state["smtp_pass"] = st.text_input("App Pass", st.session_state["smtp_pass"], type="password")
                         if st.button("Send Test Email", use_container_width=True):
                             if st.session_state["alert_email_addr"] and st.session_state["smtp_user"] and st.session_state["smtp_pass"]:
-                                if send_email_alert(st.session_state["alert_email_addr"], st.session_state["smtp_user"], st.session_state["smtp_pass"], "Terminal Alert Test", "Email alerts are working correctly!"):
+                                test_html = """
+                                <div style="font-family: Arial, sans-serif; color: #333;">
+                                    <h2 style="color: #2962ff;">📈 Trading Terminal Auto-Scan</h2>
+                                    <p><b>This is a test alert.</b> Your email formatting is working perfectly.</p>
+                                    <hr style="border: 0; border-top: 1px solid #eee; margin: 15px 0;">
+                                    <p>Ready to receive live high-conviction buy signals.</p>
+                                </div>
+                                """
+                                if send_email_alert(st.session_state["alert_email_addr"], st.session_state["smtp_user"], st.session_state["smtp_pass"], "Terminal Alert Test", test_html):
                                     st.success("Sent!")
                                 else: st.error("Failed — check username and App Password.")
                             else: st.warning("Fill in all three email fields first.")
