@@ -1838,14 +1838,14 @@ def main():
                     pub_time = item.get("providerPublishTime", time.time())
                     dt_str = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d %H:%M")
                     
-                    # Use pure HTML to guarantee it opens in a new tab securely and avoids Markdown rendering bugs
-                    link = item.get('link', '#')
-                    title = item.get('title', 'Headline')
-                    st.markdown(f'<h4><a href="{link}" target="_blank" style="color: #2962ff; text-decoration: none;">{title}</a></h4>', unsafe_allow_html=True)
-                    st.caption(f"Published by **{item.get('publisher', 'Yahoo Finance')}** • {dt_str}")
-                    st.divider()
-            else:
-                st.info("No news fetched. Check connection.")
+                    img_url = ""
+                    try:
+                        if "thumbnail" in item and item["thumbnail"] and "resolutions" in item["thumbnail"]["thumbnail"]:
+                            img_url = item["thumbnail"]["thumbnail"]["resolutions"][0]["url"]
+                        elif "thumbnail" in item and "resolutions" in item["thumbnail"]:
+                            img_url = item["thumbnail"]["resolutions"][0]["url"]
+                    except:
+                        pass
 
                     img_html = f'<img src="{img_url}" style="width: 100px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0;">' if img_url else f'<div style="width: 100px; height: 100px; background: #2a2e39; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #787b86; font-size: 2rem;">📰</div>'
 
